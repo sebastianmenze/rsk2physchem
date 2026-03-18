@@ -46,6 +46,7 @@ S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY")
 S3_BUCKET                 = os.getenv("S3_BUCKET")
 S3_DEST_PREFIX            = os.getenv("S3_DEST_PREFIX")
+PASSWORD                  = os.getenv("PASSWORD")
 
 
 # ─────────────────────────────────────────────
@@ -683,6 +684,7 @@ app.title = "CTD Profile Browser"
 
 # Hidden stores for application state
 stores = html.Div([
+    dcc.Store(id="store-authenticated",  data=False),
     dcc.Store(id="store-station-matches", data={}),
     dcc.Store(id="store-rsk-df",         data={}),   # JSON via orient="split"
     dcc.Store(id="store-rsk-meta",       data={}),
@@ -695,6 +697,26 @@ stores = html.Div([
     dcc.Store(id="store-cruise-times",   data={}),
     dcc.Store(id="store-tmpfiles",       data=[]),
 ])
+
+login_modal = dbc.Modal([
+    dbc.ModalHeader(dbc.ModalTitle("CTD Profile Browser"), close_button=False),
+    dbc.ModalBody([
+        html.P("Enter the password to access this application.", className="text-muted"),
+        dbc.InputGroup([
+            dbc.InputGroupText(html.I(className="bi bi-lock")),
+            dbc.Input(
+                id="login-password-input",
+                type="password",
+                placeholder="Password",
+                n_submit=0,
+            ),
+        ], className="mb-2"),
+        html.Div(id="login-error-msg", className="text-danger small"),
+    ]),
+    dbc.ModalFooter(
+        dbc.Button("Login", id="login-btn", color="primary", n_clicks=0),
+    ),
+], id="login-modal", is_open=True, backdrop="static", keyboard=False, centered=True)
 
 left_panel = dbc.Card([
     dbc.CardHeader(html.H5("CTD Profile Browser", className="mb-0")),
@@ -863,11 +885,36 @@ right_panel = dbc.Card([
 
 app.layout = dbc.Container([
     stores,
+    login_modal,
     dbc.Row([
         dbc.Col(left_panel,  width=3, style={"padding": "0"}),
         dbc.Col(right_panel, width=9, style={"padding": "0 0 0 8px"}),
     ], style={"height": "calc(100vh - 16px)"}),
 ], fluid=True, style={"padding": "8px"})
+
+
+# ─────────────────────────────────────────────
+# Login / password-gate callback
+# ─────────────────────────────────────────────
+
+@app.callback(
+    Output("login-modal",         "is_open"),
+    Output("store-authenticated", "data"),
+    Output("login-error-msg",     "children"),
+    Input("login-btn",            "n_clicks"),
+    Input("login-password-input", "n_submit"),
+    State("login-password-input", "value"),
+    State("store-authenticated",  "data"),
+    prevent_initial_call=True,
+)
+def check_password(n_clicks, n_submit, entered, already_authed):
+    if already_authed:
+        return False, True, ""
+    if not entered:
+        return True, False, "Please enter a password."
+    if PASSWORD and entered == PASSWORD:
+        return False, True, ""
+    return True, False, "Incorrect password."
 
 
 # ─────────────────────────────────────────────
