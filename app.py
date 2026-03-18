@@ -780,13 +780,14 @@ right_panel = dbc.Card([
                 config={"displayModeBar": True, "scrollZoom": True,
                         "modeBarButtonsToAdd": ["select2d", "lasso2d"],
                         "responsive": True},
-                style={"height": "100%", "minHeight": "300px"},
+                style={"height": "600px", "minHeight": "600px"},
             ),
-            style={"flex": "1", "minHeight": "0", "display": "flex",
+            style={"flexShrink": "0", "display": "flex",
                    "flexDirection": "column"},
         ),
     ], style={"display": "flex", "flexDirection": "column",
-              "height": "100%", "padding": "8px", "gap": "4px"}),
+              "height": "100%", "padding": "8px", "gap": "4px",
+              "overflowY": "auto"}),
 ], style={"height": "calc(100vh - 16px)", "overflow": "hidden"})
 
 app.layout = dbc.Container([
