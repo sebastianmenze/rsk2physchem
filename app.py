@@ -9,6 +9,8 @@ import uuid
 import json
 import base64
 import tempfile
+import threading
+import time
 from datetime import datetime
 from io import StringIO
 
@@ -856,6 +858,19 @@ app.layout = dbc.Container([
 
 
 # ─────────────────────────────────────────────
+# Server-side upload accumulator
+# Dash 4 fires one callback per dropped file even for a simultaneous
+# multi-file drop, so store-based accumulation races.  We collect
+# files in a server-side structure protected by a lock and use a short
+# debounce sleep so the last-arriving callback processes the full batch.
+# ─────────────────────────────────────────────
+_upload_lock  = threading.Lock()
+_upload_state = {"counter": 0, "files": [], "last_time": 0.0}
+DEBOUNCE_WAIT = 0.6   # seconds – wait for concurrent callbacks to arrive
+BATCH_WINDOW  = 3.0   # seconds – gap larger than this = new upload session
+
+
+# ─────────────────────────────────────────────
 # Callbacks
 # ─────────────────────────────────────────────
 
@@ -872,10 +887,9 @@ app.layout = dbc.Container([
     Output("input-platform",        "value"),
     Input("upload-rsk", "contents"),
     State("upload-rsk", "filename"),
-    State("store-tmpfiles", "data"),
     prevent_initial_call=True,
 )
-def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
+def process_uploaded_files(contents_list, filenames):
     if not contents_list:
         return no_update
 
@@ -883,30 +897,45 @@ def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "")
 
-    # Normalise to lists (Dash may pass bare strings instead of lists)
+    # Normalise to lists (Dash 4 fires one callback per file)
     if isinstance(contents_list, str):
         contents_list = [contents_list]
     if not isinstance(filenames, list):
         filenames = [filenames] if filenames else []
-
-    n_received = len(contents_list)
-    print(f"[upload] contents type={type(contents_list)} n={n_received} "
-          f"| filenames type={type(filenames)} n={len(filenames)}: {filenames}",
-          flush=True)
-
-    # Pad filenames to match contents if Dash only sends the last filename
-    while len(filenames) < n_received:
+    while len(filenames) < len(contents_list):
         filenames.append(f"file_{len(filenames)+1}.rsk")
 
-    # Accumulate across separate drop events (user may drop files one at a time)
-    tmp_paths = list(existing_tmp_paths or [])
+    # ── Save incoming files to disk and register in server-side accumulator
+    new_paths = []
     for content, fname in zip(contents_list, filenames):
         _, b64 = content.split(",", 1)
         raw = base64.b64decode(b64)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".rsk")
         tmp.write(raw)
         tmp.close()
-        tmp_paths.append(tmp.name)
+        new_paths.append(tmp.name)
+
+    with _upload_lock:
+        now = time.monotonic()
+        if now - _upload_state["last_time"] > BATCH_WINDOW:
+            _upload_state["files"].clear()      # new session
+        _upload_state["files"].extend(new_paths)
+        _upload_state["counter"] += 1
+        _upload_state["last_time"] = now
+        my_counter = _upload_state["counter"]
+
+    # Wait for sibling callbacks from the same drop event to register
+    time.sleep(DEBOUNCE_WAIT)
+
+    with _upload_lock:
+        if _upload_state["counter"] > my_counter:
+            # A later callback arrived after us – let it do the processing
+            return no_update
+        # We are the last callback in this batch – grab all files
+        tmp_paths = list(_upload_state["files"])
+        _upload_state["files"].clear()
+
+    print(f"[upload] processing {len(tmp_paths)} file(s)", flush=True)
 
     try:
         # Read RSK files
@@ -960,9 +989,8 @@ def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
 
         n_files    = len(tmp_paths)
         n_stations = len(station_matches)
-        recv_note  = f" (received {n_received} in this drop)" if n_received != n_files else ""
         status_msg = (
-            f"Loaded {n_files} file(s){recv_note} · "
+            f"Loaded {n_files} file(s) · "
             f"{len(df_all):,} data points · "
             f"{n_stations} CTD stations matched"
         )
