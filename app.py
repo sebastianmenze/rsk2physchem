@@ -710,11 +710,12 @@ login_modal = dbc.Modal([
         html.P("Enter the password to access this application.", className="text-muted"),
         dbc.InputGroup([
             dbc.InputGroupText(html.I(className="bi bi-lock")),
-            dbc.Input(
+            dcc.Input(
                 id="login-password-input",
                 type="password",
                 placeholder="Password",
                 n_submit=0,
+                className="form-control",
             ),
         ], className="mb-2"),
         html.Div(id="login-error-msg", className="text-danger small"),
