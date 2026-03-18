@@ -582,10 +582,7 @@ def build_map_markers(station_matches, current_index):
                 position=[lat, lon],
                 icon=icon,
                 id={"type": "station-marker", "index": i},
-                children=dl.Popup(html.Div(
-                    dangerouslyAllowHTML=True,
-                    children=popup_text,
-                )),
+                children=dl.Popup(popup_text),
             )
         )
     return markers
