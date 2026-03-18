@@ -883,15 +883,20 @@ def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "")
 
-    # Normalise to lists (Dash may pass a bare string for a single file)
+    # Normalise to lists (Dash may pass bare strings instead of lists)
     if isinstance(contents_list, str):
         contents_list = [contents_list]
-        filenames     = [filenames] if isinstance(filenames, str) else filenames
-    if isinstance(filenames, str):
-        filenames = [filenames]
+    if not isinstance(filenames, list):
+        filenames = [filenames] if filenames else []
 
     n_received = len(contents_list)
-    print(f"[upload] received {n_received} file(s): {filenames}", flush=True)
+    print(f"[upload] contents type={type(contents_list)} n={n_received} "
+          f"| filenames type={type(filenames)} n={len(filenames)}: {filenames}",
+          flush=True)
+
+    # Pad filenames to match contents if Dash only sends the last filename
+    while len(filenames) < n_received:
+        filenames.append(f"file_{len(filenames)+1}.rsk")
 
     # Accumulate across separate drop events (user may drop files one at a time)
     tmp_paths = list(existing_tmp_paths or [])
