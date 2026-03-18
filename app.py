@@ -726,7 +726,6 @@ login_modal = dbc.Modal([
 ], id="login-modal", is_open=True, backdrop="static", keyboard=False, centered=True)
 
 left_panel = dbc.Card([
-    dbc.CardHeader(html.H5("CTD Profile Browser", className="mb-0")),
     dbc.CardBody([
 
         # ── File upload
@@ -815,9 +814,9 @@ left_panel = dbc.Card([
         # ── Actions
         dbc.Label("Actions", className="fw-bold"),
         dbc.Button("Download NPC File", id="btn-download-npc",
-                   color="success", size="sm", className="w-100 mb-1"),
+                   color="success", size="sm", className="w-100 mb-1", disabled=True),
         dbc.Button("Upload to PhysChem (S3)", id="btn-upload-s3",
-                   color="primary", size="sm", className="w-100 mb-1"),
+                   color="primary", size="sm", className="w-100 mb-1", disabled=True),
         html.Div(id="action-status", className="small mt-1"),
 
         dcc.Download(id="download-npc"),
@@ -1429,23 +1428,27 @@ def download_npc(n_clicks, npc_json, meta_json, current_idx, station_matches):
         return no_update, f"Download error: {e}"
 
 
-# ── Check if profile already in PhysChem (runs whenever NPC meta changes)
+# ── Enable/disable action buttons based on whether a valid NPC exists
 @app.callback(
-    Output("btn-upload-s3",  "disabled"),
-    Output("action-status",  "children"),
-    Input("store-npc-meta",  "data"),
+    Output("btn-download-npc", "disabled"),
+    Output("btn-upload-s3",    "disabled"),
+    Output("action-status",    "children"),
+    Input("store-npc",         "data"),
+    Input("store-npc-meta",    "data"),
     prevent_initial_call=True,
 )
-def check_physchem_on_profile_change(meta_json):
-    if not meta_json or meta_json == "{}":
-        return False, ""
+def check_physchem_on_profile_change(npc_json, meta_json):
+    no_npc = not npc_json or npc_json == "{}"
+    if no_npc:
+        return True, True, ""
+    # NPC exists – check if already in PhysChem
     try:
-        meta = json.loads(meta_json)
+        meta = json.loads(meta_json) if meta_json and meta_json != "{}" else {}
     except Exception:
-        return False, ""
-    if check_if_operation_in_physchem(meta):
-        return True, "⚠ This profile is already uploaded to PhysChem."
-    return False, ""
+        meta = {}
+    if meta and check_if_operation_in_physchem(meta):
+        return False, True, "⚠ This profile is already uploaded to PhysChem."
+    return False, False, ""
 
 
 # ── Upload to S3
