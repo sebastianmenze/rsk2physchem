@@ -414,139 +414,142 @@ def npc_to_string(meta, df):
 # Plotly helpers
 # ─────────────────────────────────────────────
 
-def build_profile_figure(df_profile, ix_down, df_npc, excluded_indices):
-    """Build the 4-panel + time-series profile figure."""
+def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indices):
+    """Build the 4-panel profile figure (temperature, salinity, O2, chlorophyll)."""
     has_o2  = "dissolved_o2_concentration" in df_profile.columns and \
               df_profile["dissolved_o2_concentration"].dropna().any()
     has_chl = "chlorophyll" in df_profile.columns and \
               df_profile["chlorophyll"].dropna().any()
 
     fig = make_subplots(
-        rows=3, cols=4,
-        row_heights=[0.4, 0.4, 0.2],
-        specs=[[{}, {}, {}, {}],
-               [{}, {}, {}, {}],
-               [{"colspan": 4}, None, None, None]],
-        subplot_titles=("Temperature", "Salinity",
-                        "Dissolved O₂", "Chlorophyll",
-                        "", "", "", "",
-                        "Depth vs Time (drag to select span)"),
+        rows=1, cols=4,
+        subplot_titles=("Temperature", "Salinity", "Dissolved O₂", "Chlorophyll"),
+        shared_yaxes=True,
     )
 
-    excl = [i for i in excluded_indices if i in df_profile.index]
-    keep = [i for i in df_profile.index if i not in excluded_indices]
+    excl     = set(i for i in (excluded_indices or []) if i in df_profile.index)
+    span_set = set(range(span_start, span_end + 1)) \
+               if (span_start is not None and span_end is not None) \
+               else set(df_profile.index)
 
-    color_keep = df_profile.loc[keep].index.values.tolist() if keep else []
-    color_excl = ["red"] * len(excl)
+    keep_span  = [i for i in df_profile.index if i not in excl and i in span_set]
+    keep_other = [i for i in df_profile.index if i not in excl and i not in span_set]
+    excl_list  = list(excl)
 
-    # ── Temperature
-    if keep:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[keep, "temperature"].tolist(),
-            y=(-df_profile.loc[keep, "depth"]).tolist(),
-            mode="markers", marker=dict(size=4, color=color_keep, colorscale="Viridis"),
-            name="raw", showlegend=False,
-            customdata=keep, hovertemplate="T=%{x:.3f}°C d=%{y:.1f}m<extra></extra>",
-        ), row=1, col=1)
-    if excl:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[excl, "temperature"].tolist(),
-            y=(-df_profile.loc[excl, "depth"]).tolist(),
-            mode="markers", marker=dict(size=6, color="red", symbol="x"),
-            name="excluded", showlegend=False,
-        ), row=1, col=1)
-    if len(df_npc) and "TEMP.value" in df_npc.columns:
-        fig.add_trace(go.Scatter(
-            x=df_npc["TEMP.value"].tolist(), y=(-df_npc["DEPTH.value"]).tolist(),
-            mode="lines", line=dict(color="red", width=2), name="binned",
-            showlegend=False,
-        ), row=1, col=1)
+    vars_cfg = [
+        ("temperature",                  "°C",      "TEMP.value",      "T=%{x:.3f}°C d=%{y:.1f}m"),
+        ("salinity",                     "PSU",     "PSAL.value",      "S=%{x:.3f} PSU d=%{y:.1f}m"),
+        ("dissolved_o2_concentration",   "µmol/l",  "DOX.value",       None),
+        ("chlorophyll",                  "µg/l",    "ChlA_SENS.value", None),
+    ]
+    no_data_labels = {
+        "dissolved_o2_concentration": "No O₂ data",
+        "chlorophyll": "No Chl data",
+    }
 
-    # ── Salinity
-    if keep:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[keep, "salinity"].tolist(),
-            y=(-df_profile.loc[keep, "depth"]).tolist(),
-            mode="markers", marker=dict(size=4, color=color_keep, colorscale="Viridis"),
-            name="raw", showlegend=False,
-            customdata=keep, hovertemplate="S=%{x:.3f} PSU d=%{y:.1f}m<extra></extra>",
-        ), row=1, col=2)
-    if excl:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[excl, "salinity"].tolist(),
-            y=(-df_profile.loc[excl, "depth"]).tolist(),
-            mode="markers", marker=dict(size=6, color="red", symbol="x"),
-            name="excluded", showlegend=False,
-        ), row=1, col=2)
-    if len(df_npc) and "PSAL.value" in df_npc.columns:
-        fig.add_trace(go.Scatter(
-            x=df_npc["PSAL.value"].tolist(), y=(-df_npc["DEPTH.value"]).tolist(),
-            mode="lines", line=dict(color="red", width=2), showlegend=False,
-        ), row=1, col=2)
+    for col_i, (col_name, xlabel, npc_col, htmpl) in enumerate(vars_cfg, start=1):
+        has_col = col_name in df_profile.columns and df_profile[col_name].dropna().any()
 
-    # ── O₂
-    if has_o2 and keep:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[keep, "dissolved_o2_concentration"].tolist(),
-            y=(-df_profile.loc[keep, "depth"]).tolist(),
-            mode="markers", marker=dict(size=4, color=color_keep, colorscale="Viridis"),
-            showlegend=False,
-        ), row=1, col=3)
-    if len(df_npc) and "DOX.value" in df_npc.columns:
-        fig.add_trace(go.Scatter(
-            x=df_npc["DOX.value"].tolist(), y=(-df_npc["DEPTH.value"]).tolist(),
-            mode="lines", line=dict(color="red", width=2), showlegend=False,
-        ), row=1, col=3)
-    if not has_o2:
-        fig.add_annotation(text="No O₂ data", xref="x3 domain", yref="y3 domain",
-                           x=0.5, y=0.5, showarrow=False, row=1, col=3)
+        if not has_col:
+            if col_name in no_data_labels:
+                fig.add_annotation(
+                    text=no_data_labels[col_name], x=0.5, y=0.5,
+                    xref=f"x{col_i} domain", yref=f"y{col_i} domain",
+                    showarrow=False,
+                )
+            continue
 
-    # ── Chlorophyll
-    if has_chl and keep:
-        fig.add_trace(go.Scatter(
-            x=df_profile.loc[keep, "chlorophyll"].tolist(),
-            y=(-df_profile.loc[keep, "depth"]).tolist(),
-            mode="markers", marker=dict(size=4, color=color_keep, colorscale="Viridis"),
-            showlegend=False,
-        ), row=1, col=4)
-    if len(df_npc) and "ChlA_SENS.value" in df_npc.columns:
-        fig.add_trace(go.Scatter(
-            x=df_npc["ChlA_SENS.value"].tolist(), y=(-df_npc["DEPTH.value"]).tolist(),
-            mode="lines", line=dict(color="red", width=2), showlegend=False,
-        ), row=1, col=4)
-    if not has_chl:
-        fig.add_annotation(text="No Chl data", xref="x4 domain", yref="y4 domain",
-                           x=0.5, y=0.5, showarrow=False, row=1, col=4)
+        # Non-selected points (light gray)
+        if keep_other:
+            fig.add_trace(go.Scatter(
+                x=df_profile.loc[keep_other, col_name].tolist(),
+                y=(-df_profile.loc[keep_other, "depth"]).tolist(),
+                mode="markers", marker=dict(size=3, color="lightgray"),
+                showlegend=False,
+            ), row=1, col=col_i)
 
-    # ── Time series (row 3)
+        # Selected span (color by index)
+        if keep_span:
+            kw = dict(hovertemplate=f"{htmpl}<extra></extra>") if htmpl else {}
+            fig.add_trace(go.Scatter(
+                x=df_profile.loc[keep_span, col_name].tolist(),
+                y=(-df_profile.loc[keep_span, "depth"]).tolist(),
+                mode="markers",
+                marker=dict(size=4, color=keep_span, colorscale="Viridis"),
+                showlegend=False, customdata=keep_span,
+                **kw,
+            ), row=1, col=col_i)
+
+        # Excluded (red X)
+        if excl_list:
+            fig.add_trace(go.Scatter(
+                x=df_profile.loc[excl_list, col_name].tolist(),
+                y=(-df_profile.loc[excl_list, "depth"]).tolist(),
+                mode="markers", marker=dict(size=6, color="red", symbol="x"),
+                showlegend=False,
+            ), row=1, col=col_i)
+
+        # NPC binned line
+        if npc_col and len(df_npc) and npc_col in df_npc.columns:
+            fig.add_trace(go.Scatter(
+                x=df_npc[npc_col].tolist(), y=(-df_npc["DEPTH.value"]).tolist(),
+                mode="lines", line=dict(color="red", width=2), showlegend=False,
+            ), row=1, col=col_i)
+
+        fig.update_xaxes(title_text=xlabel, row=1, col=col_i)
+
+    fig.update_yaxes(title_text="Depth (m)", row=1, col=1)
+    fig.update_layout(
+        height=400,
+        margin=dict(l=40, r=20, t=50, b=40),
+        dragmode="select",
+    )
+    return fig
+
+
+def build_timeseries_figure(df_profile, span_start, span_end):
+    """Build the depth-vs-time figure with highlighted selected span."""
+    fig = go.Figure()
+
+    ts_str = df_profile["timestamp"].astype(str).tolist()
+    depths = (-df_profile["depth"]).tolist()
+
+    # Full cast (gray background line)
     fig.add_trace(go.Scatter(
-        x=df_profile["timestamp"].astype(str).tolist(),
-        y=(-df_profile["depth"]).tolist(),
-        mode="lines", line=dict(color="black", width=1),
-        showlegend=False,
-    ), row=3, col=1)
-    down_df = df_profile[ix_down]
-    if len(down_df):
-        fig.add_trace(go.Scatter(
-            x=down_df["timestamp"].astype(str).tolist(),
-            y=(-down_df["depth"]).tolist(),
-            mode="markers", marker=dict(size=3, color="red"),
-            showlegend=False,
-        ), row=3, col=1)
+        x=ts_str, y=depths,
+        mode="lines", line=dict(color="#aaaaaa", width=1),
+        showlegend=False, name="full cast",
+    ))
 
-    # Axis labels
-    for col, xlabel in [(1, "°C"), (2, "PSU"), (3, "µmol/l"), (4, "µg/l")]:
-        fig.update_xaxes(title_text=xlabel, row=1, col=col)
-        fig.update_yaxes(title_text="Depth (m)", row=1, col=col)
+    # Selected span
+    if span_start is not None and span_end is not None:
+        sp_idx = list(range(span_start, min(span_end + 1, len(df_profile))))
+        if sp_idx:
+            sp_df = df_profile.iloc[sp_idx]
+            sp_ts = sp_df["timestamp"].astype(str).tolist()
+            sp_d  = (-sp_df["depth"]).tolist()
 
-    fig.update_xaxes(title_text="Time (UTC)", row=3, col=1)
-    fig.update_yaxes(title_text="Depth (m)",  row=3, col=1)
+            # Shaded region
+            fig.add_vrect(
+                x0=sp_ts[0], x1=sp_ts[-1],
+                fillcolor="steelblue", opacity=0.18, line_width=0,
+            )
+            # Highlighted markers
+            fig.add_trace(go.Scatter(
+                x=sp_ts, y=sp_d,
+                mode="markers", marker=dict(size=3, color="steelblue"),
+                showlegend=False, name="selected",
+            ))
 
     fig.update_layout(
-        height=700,
-        margin=dict(l=40, r=20, t=60, b=40),
+        height=250,
+        margin=dict(l=50, r=10, t=30, b=40),
         dragmode="select",
-        selectdirection="h",   # horizontal span selection on time axis
+        selectdirection="h",
+        xaxis_title="Time (UTC)",
+        yaxis_title="Depth (m)",
+        title_text="Depth vs Time – drag to select span",
+        title_font_size=12,
     )
     return fig
 
@@ -624,6 +627,7 @@ stores = html.Div([
     dcc.Store(id="store-npc",            data={}),
     dcc.Store(id="store-npc-meta",       data={}),
     dcc.Store(id="store-span-indices",   data=[]),
+    dcc.Store(id="store-span-range",     data=[0, 0]),
     dcc.Store(id="store-cruise-times",   data={}),
     dcc.Store(id="store-tmpfiles",       data=[]),
 ])
@@ -729,30 +733,54 @@ left_panel = dbc.Card([
 
 right_panel = dbc.Card([
     dbc.CardBody([
-        # Map
-        html.Div([
-            dl.Map(
-                id="leaflet-map",
-                center=[60, 5],
-                zoom=5,
-                children=[
-                    dl.TileLayer(
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                        attribution="© OpenStreetMap contributors",
+        # ── Top row: Map (left) + Depth-time plot (right)
+        dbc.Row([
+            dbc.Col([
+                dl.Map(
+                    id="leaflet-map",
+                    center=[60, 5],
+                    zoom=5,
+                    children=[
+                        dl.TileLayer(
+                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                            attribution="© OpenStreetMap contributors",
+                        ),
+                        dl.LayerGroup(id="map-markers"),
+                    ],
+                    style={"height": "280px", "borderRadius": "6px"},
+                ),
+            ], width=6, className="pe-2"),
+            dbc.Col([
+                dcc.Loading(
+                    dcc.Graph(
+                        id="timeseries-plot",
+                        config={"displayModeBar": True, "scrollZoom": False,
+                                "modeBarButtonsToAdd": ["select2d"]},
+                        style={"height": "250px"},
                     ),
-                    dl.LayerGroup(id="map-markers"),
-                ],
-                style={"height": "280px", "borderRadius": "6px"},
-            ),
-        ], className="mb-3"),
+                ),
+                # Range slider for span selection
+                html.Div([
+                    dcc.RangeSlider(
+                        id="span-slider",
+                        min=0, max=100, step=1,
+                        value=[0, 100],
+                        marks={},
+                        allowCross=False,
+                        tooltip={"placement": "bottom", "always_visible": False},
+                        className="mt-1",
+                    ),
+                ], style={"paddingLeft": "8px", "paddingRight": "8px"}),
+            ], width=6, className="ps-0"),
+        ], className="mb-2", style={"marginBottom": "0 !important"}),
 
-        # Profile plot
+        # ── Bottom row: 4 profile plots
         dcc.Loading(
             dcc.Graph(
                 id="profile-plot",
                 config={"displayModeBar": True, "scrollZoom": True,
                         "modeBarButtonsToAdd": ["select2d", "lasso2d"]},
-                style={"height": "700px"},
+                style={"height": "400px"},
             ),
         ),
 
@@ -934,19 +962,115 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     return list(new_excl)
 
 
-# ── Compute NPC whenever span or exclusions change
+# ── Initialise slider when station changes (also computes initial span range)
+@app.callback(
+    Output("span-slider",       "min"),
+    Output("span-slider",       "max"),
+    Output("span-slider",       "marks"),
+    Output("span-slider",       "value"),
+    Output("store-span-range",  "data"),
+    Input("store-current-index",   "data"),
+    State("store-rsk-df",          "data"),
+    State("store-station-matches", "data"),
+    prevent_initial_call=True,
+)
+def init_slider(current_idx, rsk_df_json, station_matches):
+    if not station_matches or not rsk_df_json:
+        return 0, 100, {}, [0, 100], [0, 100]
+
+    keys       = list(station_matches.keys())
+    data       = station_matches[keys[current_idx]]
+    df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
+    df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+    N          = len(df_profile)
+    if N == 0:
+        return 0, 0, {}, [0, 0], [0, 0]
+
+    ix_down = detect_downcast(df_profile)
+    if ix_down.any():
+        down_idx   = df_profile.index[ix_down].tolist()
+        span_start = min(down_idx)
+        span_end   = max(down_idx)
+    else:
+        span_start, span_end = 0, N - 1
+
+    ts = df_profile["timestamp"]
+    marks = {}
+    for frac in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        idx = int(frac * (N - 1))
+        t   = pd.Timestamp(ts.iloc[idx])
+        marks[idx] = {"label": t.strftime("%H:%M"), "style": {"fontSize": "10px"}}
+
+    return 0, N - 1, marks, [span_start, span_end], [span_start, span_end]
+
+
+# ── Slider interaction → update span range store
+@app.callback(
+    Output("store-span-range", "data", allow_duplicate=True),
+    Input("span-slider", "value"),
+    prevent_initial_call=True,
+)
+def update_span_from_slider(slider_value):
+    if slider_value is None:
+        return no_update
+    return slider_value
+
+
+# ── Timeseries drag-select → update span range store + sync slider
+@app.callback(
+    Output("store-span-range", "data", allow_duplicate=True),
+    Output("span-slider",      "value", allow_duplicate=True),
+    Input("timeseries-plot",   "relayoutData"),
+    State("store-current-index",   "data"),
+    State("store-rsk-df",          "data"),
+    State("store-station-matches", "data"),
+    State("store-span-range",      "data"),
+    prevent_initial_call=True,
+)
+def update_span_from_timeseries(relayout_data, current_idx, rsk_df_json,
+                                 station_matches, current_span):
+    if not relayout_data or not station_matches or not rsk_df_json:
+        return no_update, no_update
+
+    x0 = relayout_data.get("selections[0].x0")
+    x1 = relayout_data.get("selections[0].x1")
+    if not x0 or not x1:
+        return no_update, no_update
+
+    keys       = list(station_matches.keys())
+    data       = station_matches[keys[current_idx]]
+    df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
+    df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+
+    ts = pd.to_datetime(df_profile["timestamp"])
+    ts = ts.dt.tz_localize("UTC") if ts.dt.tz is None else ts.dt.tz_convert("UTC")
+
+    def _parse_ts(s):
+        t = pd.Timestamp(s)
+        return t.tz_localize("UTC") if t.tz is None else t.tz_convert("UTC")
+
+    t0, t1 = sorted([_parse_ts(x0), _parse_ts(x1)])
+    mask    = (ts >= t0) & (ts <= t1)
+    indices = df_profile.index[mask].tolist()
+    if not indices:
+        return no_update, no_update
+
+    span = [min(indices), max(indices)]
+    return span, span
+
+
+# ── Compute NPC whenever span range or exclusions change
 @app.callback(
     Output("store-npc",          "data"),
     Output("store-npc-meta",     "data"),
     Output("store-span-indices", "data"),
-    Input("profile-plot",       "relayoutData"),
+    Input("store-span-range",   "data"),
     Input("store-excluded",     "data"),
     Input("checklist-params",   "value"),
     State("store-current-index",  "data"),
     State("store-station-matches","data"),
     State("store-rsk-df",         "data"),
     State("store-rsk-meta",       "data"),
-    State("store-span-indices",   "data"),
     State("store-cruise-times",   "data"),
     State("input-cruise-number",  "value"),
     State("input-vessel-name",    "value"),
@@ -954,42 +1078,23 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     State("input-platform",       "value"),
     prevent_initial_call=True,
 )
-def compute_npc(relayout_data, excluded, param_vals,
+def compute_npc(span_range, excluded, param_vals,
                 current_idx, station_matches, rsk_df_json, rsk_meta,
-                span_indices, cruise_times,
+                cruise_times,
                 cruise_number, vessel_name, mission_number, platform):
-    if not station_matches or not rsk_df_json:
+    if not station_matches or not rsk_df_json or not span_range:
         return {}, {}, []
 
+    span_start, span_end = span_range
     keys        = list(station_matches.keys())
     station_key = keys[current_idx]
     data        = station_matches[station_key]
     df_indices  = data["df_rsk_indices"]
 
-    df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
-    df_profile = df_all.loc[df_indices].copy().reset_index(drop=True)
+    df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
+    df_profile  = df_all.loc[df_indices].copy().reset_index(drop=True)
 
-    # Detect downcast for initial span
-    ix_down = detect_downcast(df_profile)
-
-    # Update span from relayout (time axis selection on row=3 subplot)
-    new_span = span_indices or []
-    if relayout_data:
-        x0 = relayout_data.get("xaxis9.range[0]") or relayout_data.get("selections[0].x0")
-        x1 = relayout_data.get("xaxis9.range[1]") or relayout_data.get("selections[0].x1")
-        if x0 and x1:
-            ts = pd.to_datetime(df_profile["timestamp"])
-            ts = ts.dt.tz_localize("UTC") if ts.dt.tz is None else ts.dt.tz_convert("UTC")
-            t0 = pd.Timestamp(x0, tz="UTC") if "+" not in str(x0) and "Z" not in str(x0) \
-                 else pd.Timestamp(x0).tz_convert("UTC")
-            t1 = pd.Timestamp(x1, tz="UTC") if "+" not in str(x1) and "Z" not in str(x1) \
-                 else pd.Timestamp(x1).tz_convert("UTC")
-            mask = (ts >= t0) & (ts <= t1)
-            new_span = df_profile.index[mask].tolist()
-
-    if not new_span and ix_down.any():
-        new_span = df_profile.index[ix_down].tolist()
-
+    new_span = list(range(span_start, min(span_end + 1, len(df_profile))))
     if not new_span:
         return {}, {}, []
 
@@ -1007,18 +1112,46 @@ def compute_npc(relayout_data, excluded, param_vals,
         data["station_info"],
     )
 
-    npc_json  = df_npc.to_json(orient="split")  if len(df_npc) else "{}"
+    npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
     meta_json = json.dumps(meta)
-
     return npc_json, meta_json, new_span
 
 
-# ── Main display: map + plots + UI state
+# ── Timeseries figure (depth vs time with span highlight)
+@app.callback(
+    Output("timeseries-plot", "figure"),
+    Input("store-current-index",   "data"),
+    Input("store-span-range",      "data"),
+    State("store-rsk-df",          "data"),
+    State("store-station-matches", "data"),
+)
+def update_timeseries(current_idx, span_range, rsk_df_json, station_matches):
+    empty = go.Figure()
+    empty.update_layout(
+        height=250, margin=dict(l=50, r=10, t=30, b=40),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        annotations=[dict(text="No data", showarrow=False)],
+    )
+    if not station_matches or not rsk_df_json:
+        return empty
+
+    try:
+        keys       = list(station_matches.keys())
+        data       = station_matches[keys[current_idx]]
+        df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+        span_start = span_range[0] if span_range else None
+        span_end   = span_range[1] if span_range else None
+        return build_timeseries_figure(df_profile, span_start, span_end)
+    except Exception:
+        return empty
+
+
+# ── Main display: map + UI state (no plots)
 @app.callback(
     Output("leaflet-map",       "center"),
     Output("leaflet-map",       "zoom"),
     Output("map-markers",       "children"),
-    Output("profile-plot",      "figure"),
     Output("station-info-text", "children"),
     Output("nav-label",         "children"),
     Output("btn-prev",          "disabled"),
@@ -1029,22 +1162,10 @@ def compute_npc(relayout_data, excluded, param_vals,
     Input("store-current-index",   "data"),
     Input("store-excluded",        "data"),
     Input("store-npc",             "data"),
-    State("store-rsk-df",          "data"),
-    State("store-span-indices",    "data"),
 )
-def update_display(station_matches, current_idx, excluded,
-                   npc_json, rsk_df_json, span_indices):
-    empty_fig = go.Figure()
-    empty_fig.update_layout(
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
-        annotations=[dict(text="Upload RSK files to begin",
-                          showarrow=False, font=dict(size=18))],
-        height=700,
-    )
-
+def update_display(station_matches, current_idx, excluded, npc_json):
     if not station_matches:
-        return ([60, 5], 5, [], empty_fig,
-                "No data loaded", "─", True, True, "", "")
+        return ([60, 5], 5, [], "No data loaded", "─", True, True, "", "")
 
     keys  = list(station_matches.keys())
     n     = len(keys)
@@ -1052,31 +1173,16 @@ def update_display(station_matches, current_idx, excluded,
     data  = station_matches[key]
     si    = data["station_info"]
 
-    # Map
     center, zoom = map_center_zoom(station_matches)
-    markers = build_map_markers(station_matches, current_idx)
+    markers      = build_map_markers(station_matches, current_idx)
 
-    # Profile
-    df_npc = pd.DataFrame()
+    df_npc_len = 0
     if npc_json and npc_json != "{}":
         try:
-            df_npc = pd.read_json(StringIO(npc_json), orient="split")
+            df_npc_len = len(pd.read_json(StringIO(npc_json), orient="split"))
         except Exception:
             pass
 
-    fig = empty_fig
-    if rsk_df_json:
-        try:
-            df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
-            df_indices = data["df_rsk_indices"]
-            df_profile = df_all.loc[df_indices].copy().reset_index(drop=True)
-            ix_down    = detect_downcast(df_profile)
-            fig = build_profile_figure(df_profile, ix_down, df_npc, set(excluded or []))
-            fig.update_layout(title_text=f"{key}")
-        except Exception as e:
-            pass
-
-    # Station info text
     corr_note = ""
     if si.get("time_corrected"):
         corr_note = (f"\n⚠ TIME CORRECTED\n"
@@ -1094,16 +1200,64 @@ def update_display(station_matches, current_idx, excluded,
         + corr_note
     )
 
-    nav_label    = f"Profile {current_idx+1} / {n}"
-    excl_count   = f"Excluded: {len(excluded or [])} points"
-    status_msg   = f"Station {current_idx+1}/{n} · {len(df_npc)} depth bins computed"
+    nav_label  = f"Profile {current_idx+1} / {n}"
+    excl_count = f"Excluded: {len(excluded or [])} points"
+    status_msg = f"Station {current_idx+1}/{n} · {df_npc_len} depth bins computed"
 
     return (
-        center, zoom, markers, fig,
+        center, zoom, markers,
         info, nav_label,
         current_idx <= 0, current_idx >= n - 1,
         excl_count, status_msg,
     )
+
+
+# ── Profile figure (4 panels)
+@app.callback(
+    Output("profile-plot", "figure"),
+    Input("store-current-index",   "data"),
+    Input("store-excluded",        "data"),
+    Input("store-npc",             "data"),
+    Input("store-span-range",      "data"),
+    State("store-rsk-df",          "data"),
+    State("store-station-matches", "data"),
+)
+def update_profile(current_idx, excluded, npc_json, span_range,
+                   rsk_df_json, station_matches):
+    empty = go.Figure()
+    empty.update_layout(
+        height=400, margin=dict(l=40, r=20, t=50, b=40),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        annotations=[dict(text="Upload RSK files to begin",
+                          showarrow=False, font=dict(size=18))],
+    )
+    if not station_matches or not rsk_df_json:
+        return empty
+
+    try:
+        keys       = list(station_matches.keys())
+        key        = keys[current_idx]
+        data       = station_matches[key]
+        df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+
+        df_npc = pd.DataFrame()
+        if npc_json and npc_json != "{}":
+            try:
+                df_npc = pd.read_json(StringIO(npc_json), orient="split")
+            except Exception:
+                pass
+
+        span_start = span_range[0] if span_range else 0
+        span_end   = span_range[1] if span_range else len(df_profile) - 1
+
+        fig = build_profile_figure(
+            df_profile, span_start, span_end, df_npc, set(excluded or [])
+        )
+        fig.update_layout(title_text=key)
+        return fig
+    except Exception:
+        return empty
 
 
 # ── Download NPC
