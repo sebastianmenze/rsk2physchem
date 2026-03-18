@@ -919,7 +919,8 @@ def check_password(n_clicks, n_submit, entered, already_authed):
         return False, True, ""
     if not entered:
         return True, False, "Please enter a password."
-    if PASSWORD and entered == PASSWORD:
+    expected = os.getenv("PASSWORD") or PASSWORD
+    if expected and entered.strip() == expected.strip():
         return False, True, ""
     return True, False, "Incorrect password."
 
