@@ -38,15 +38,13 @@ except ImportError:
     BOTO3_AVAILABLE = False
 
 # ── Configuration from environment (see .env)
-TOKTLOGGER_CRUISES_URL    = os.getenv("TOKTLOGGER_CRUISES_URL",
-                                       "http://toktlogger-hansb.hi.no/api/cruises/all")
-TOKTLOGGER_ACTIVITIES_URL = os.getenv("TOKTLOGGER_ACTIVITIES_URL",
-                                       "http://toktlogger-hansb.hi.no/api/activities/inPeriod")
-S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL",      "https://s3.hi.no")
-S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID",     "")
-S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY", "")
-S3_BUCKET                 = os.getenv("S3_BUCKET",            "transient-data")
-S3_DEST_PREFIX            = os.getenv("S3_DEST_PREFIX",       "physchem/incoming/regular_stations/test/")
+TOKTLOGGER_CRUISES_URL    = os.getenv("TOKTLOGGER_CRUISES_URL")
+TOKTLOGGER_ACTIVITIES_URL = os.getenv("TOKTLOGGER_ACTIVITIES_URL")
+S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL")
+S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID")
+S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY")
+S3_BUCKET                 = os.getenv("S3_BUCKET")
+S3_DEST_PREFIX            = os.getenv("S3_DEST_PREFIX")
 
 
 # ─────────────────────────────────────────────
