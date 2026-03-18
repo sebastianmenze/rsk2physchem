@@ -427,14 +427,9 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
         shared_yaxes=True,
     )
 
-    excl     = set(i for i in (excluded_indices or []) if i in df_profile.index)
-    span_set = set(range(span_start, span_end + 1)) \
-               if (span_start is not None and span_end is not None) \
-               else set(df_profile.index)
-
-    keep_span  = [i for i in df_profile.index if i not in excl and i in span_set]
-    keep_other = [i for i in df_profile.index if i not in excl and i not in span_set]
-    excl_list  = list(excl)
+    excl      = set(i for i in (excluded_indices or []) if i in df_profile.index)
+    keep      = [i for i in df_profile.index if i not in excl]
+    excl_list = list(excl)
 
     vars_cfg = [
         ("temperature",                  "°C",      "TEMP.value",      "T=%{x:.3f}°C d=%{y:.1f}m"),
@@ -459,24 +454,15 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
                 )
             continue
 
-        # Non-selected points (light gray)
-        if keep_other:
-            fig.add_trace(go.Scatter(
-                x=df_profile.loc[keep_other, col_name].tolist(),
-                y=(-df_profile.loc[keep_other, "depth"]).tolist(),
-                mode="markers", marker=dict(size=3, color="lightgray"),
-                showlegend=False,
-            ), row=1, col=col_i)
-
-        # Selected span (color by index)
-        if keep_span:
+        # All non-excluded points in Viridis
+        if keep:
             kw = dict(hovertemplate=f"{htmpl}<extra></extra>") if htmpl else {}
             fig.add_trace(go.Scatter(
-                x=df_profile.loc[keep_span, col_name].tolist(),
-                y=(-df_profile.loc[keep_span, "depth"]).tolist(),
+                x=df_profile.loc[keep, col_name].tolist(),
+                y=(-df_profile.loc[keep, "depth"]).tolist(),
                 mode="markers",
-                marker=dict(size=4, color=keep_span, colorscale="Viridis"),
-                showlegend=False, customdata=keep_span,
+                marker=dict(size=4, color=keep, colorscale="Viridis"),
+                showlegend=False, customdata=keep,
                 **kw,
             ), row=1, col=col_i)
 
