@@ -602,6 +602,7 @@ def build_timeseries_figure(df_profile, span_start, span_end):
         yaxis_title="Depth (m)",
         title_text="Depth vs Time – drag to select span",
         title_font_size=12,
+        uirevision=f"{span_start}_{span_end}",
     )
     return fig
 
