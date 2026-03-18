@@ -638,9 +638,10 @@ def build_map_markers(station_matches, current_index):
                     html.Tr([html.Td("Lon",      style={"color": "#888", "paddingRight": "8px"}),
                              html.Td(f"{lon:.4f}°")]),
                 ], style={"fontSize": "12px", "borderCollapse": "collapse"}),
-                html.Div("Double-click to navigate",
-                         style={"fontSize": "11px", "color": "#aaa",
-                                "marginTop": "6px", "fontStyle": "italic"}),
+                dbc.Button("Select profile",
+                           id={"type": "select-profile-btn", "index": i},
+                           color="primary", size="sm",
+                           style={"marginTop": "8px", "width": "100%"}),
             ], style={"minWidth": "160px"})
         )
         markers.append(
@@ -998,20 +999,20 @@ def process_uploaded_files(contents_list, filenames):
                 f"Error: {e}", "", "", "", "")
 
 
-# ── Navigation (buttons + map double-click)
+# ── Navigation (buttons + map popup "Select profile" button)
 @app.callback(
     Output("store-current-index", "data"),
     Output("store-excluded",      "data"),
     Input("btn-prev",  "n_clicks"),
     Input("btn-next",  "n_clicks"),
     Input("btn-clear-excl", "n_clicks"),
-    Input({"type": "station-marker", "index": ALL}, "n_dblclicks"),
+    Input({"type": "select-profile-btn", "index": ALL}, "n_clicks"),
     State("store-current-index",  "data"),
     State("store-station-matches","data"),
     State("store-excluded",       "data"),
     prevent_initial_call=True,
 )
-def navigate(n_prev, n_next, n_clear, marker_dblclicks,
+def navigate(n_prev, n_next, n_clear, select_clicks,
              current_idx, station_matches, excluded):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
@@ -1022,11 +1023,8 @@ def navigate(n_prev, n_next, n_clear, marker_dblclicks,
         return min(n - 1, current_idx + 1), []
     if triggered == "btn-clear-excl":
         return current_idx, []
-    # Map double-click: triggered_id is a dict {"type": "station-marker", "index": i}
-    if isinstance(triggered, dict) and triggered.get("type") == "station-marker":
-        clicked_idx = triggered["index"]
-        if any(v for v in marker_dblclicks if v):
-            return clicked_idx, []
+    if isinstance(triggered, dict) and triggered.get("type") == "select-profile-btn":
+        return triggered["index"], []
     return current_idx, excluded
 
 
