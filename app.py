@@ -500,9 +500,9 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
 
     fig.update_yaxes(title_text="Depth (m)", row=1, col=1)
     fig.update_layout(
-        height=400,
         margin=dict(l=40, r=20, t=50, b=40),
         dragmode="select",
+        autosize=True,
     )
     return fig
 
@@ -772,31 +772,35 @@ right_panel = dbc.Card([
                     ),
                 ], style={"paddingLeft": "8px", "paddingRight": "8px"}),
             ], width=6, className="ps-0"),
-        ], className="mb-2", style={"marginBottom": "0 !important"}),
+        ], style={"flexShrink": "0"}),
 
-        # ── Bottom row: 4 profile plots
+        # ── Status bar (fixed, above profile plots)
+        html.Div(id="status-bar",
+                 className="text-info small",
+                 style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px"}),
+
+        # ── Profile plots – fill all remaining vertical space
         dcc.Loading(
             dcc.Graph(
                 id="profile-plot",
                 config={"displayModeBar": True, "scrollZoom": True,
-                        "modeBarButtonsToAdd": ["select2d", "lasso2d"]},
-                style={"height": "400px"},
+                        "modeBarButtonsToAdd": ["select2d", "lasso2d"],
+                        "responsive": True},
+                style={"height": "100%", "minHeight": "300px"},
             ),
+            style={"flex": "1", "minHeight": "0", "display": "flex",
+                   "flexDirection": "column"},
         ),
-
-        # Status bar
-        html.Div(id="status-bar",
-                 className="text-info small mt-1",
-                 style={"minHeight": "20px"}),
-    ]),
-])
+    ], style={"display": "flex", "flexDirection": "column",
+              "height": "100%", "padding": "8px", "gap": "4px"}),
+], style={"height": "calc(100vh - 16px)", "overflow": "hidden"})
 
 app.layout = dbc.Container([
     stores,
     dbc.Row([
         dbc.Col(left_panel,  width=3, style={"padding": "0"}),
         dbc.Col(right_panel, width=9, style={"padding": "0 0 0 8px"}),
-    ]),
+    ], style={"height": "calc(100vh - 16px)"}),
 ], fluid=True, style={"padding": "8px"})
 
 
@@ -1226,7 +1230,8 @@ def update_profile(current_idx, excluded, npc_json, span_range,
                    rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
-        height=400, margin=dict(l=40, r=20, t=50, b=40),
+        margin=dict(l=40, r=20, t=50, b=40),
+        autosize=True,
         xaxis=dict(visible=False), yaxis=dict(visible=False),
         annotations=[dict(text="Upload RSK files to begin",
                           showarrow=False, font=dict(size=18))],
