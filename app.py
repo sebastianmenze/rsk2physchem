@@ -575,7 +575,7 @@ def build_timeseries_figure(df_profile, span_start, span_end):
 
     # Selected span
     if span_start is not None and span_end is not None:
-        sp_idx = list(range(span_start, min(span_end + 1, len(df_profile))))
+        sp_idx = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
         if sp_idx:
             sp_df = df_profile.iloc[sp_idx]
             sp_ts = sp_df["timestamp"].astype(str).tolist()
@@ -1235,7 +1235,7 @@ def compute_npc(span_range, excluded, param_vals,
     df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
     df_profile  = df_all.loc[df_indices].copy().reset_index(drop=True)
 
-    new_span = list(range(span_start, min(span_end + 1, len(df_profile))))
+    new_span = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
     if not new_span:
         return {}, {}, []
 
@@ -1262,11 +1262,11 @@ def compute_npc(span_range, excluded, param_vals,
 @app.callback(
     Output("timeseries-plot", "figure"),
     Input("store-current-index",   "data"),
-    Input("store-span-range",      "data"),
+    Input("span-slider",           "value"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
 )
-def update_timeseries(current_idx, span_range, rsk_df_json, station_matches):
+def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
         height=250, margin=dict(l=50, r=10, t=30, b=40),
@@ -1281,8 +1281,8 @@ def update_timeseries(current_idx, span_range, rsk_df_json, station_matches):
         data       = station_matches[keys[current_idx]]
         df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
         df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
-        span_start = span_range[0] if span_range else None
-        span_end   = span_range[1] if span_range else None
+        span_start = int(slider_value[0]) if slider_value else None
+        span_end   = int(slider_value[1]) if slider_value else None
         return build_timeseries_figure(df_profile, span_start, span_end)
     except Exception:
         return empty
