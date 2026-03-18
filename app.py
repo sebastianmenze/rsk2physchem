@@ -675,10 +675,14 @@ def map_center_zoom(station_matches):
 # App layout
 # ─────────────────────────────────────────────
 
+# Allow serving under a sub-path (e.g. /rsk2physchem/) via URL_PREFIX env var.
+_url_prefix = os.getenv("URL_PREFIX", "/").rstrip("/") + "/"
+
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
     suppress_callback_exceptions=True,
+    url_base_pathname=_url_prefix,
 )
 app.title = "CTD Profile Browser"
 
