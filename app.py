@@ -883,12 +883,18 @@ def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "")
 
-    # Dash fires once per file when multiple files are dropped; accumulate
-    # temp paths across firings so all files are processed together.
-    tmp_paths = list(existing_tmp_paths or [])
+    # Normalise to lists (Dash may pass a bare string for a single file)
     if isinstance(contents_list, str):
         contents_list = [contents_list]
+        filenames     = [filenames] if isinstance(filenames, str) else filenames
+    if isinstance(filenames, str):
         filenames = [filenames]
+
+    n_received = len(contents_list)
+    print(f"[upload] received {n_received} file(s): {filenames}", flush=True)
+
+    # Accumulate across separate drop events (user may drop files one at a time)
+    tmp_paths = list(existing_tmp_paths or [])
     for content, fname in zip(contents_list, filenames):
         _, b64 = content.split(",", 1)
         raw = base64.b64decode(b64)
@@ -949,8 +955,9 @@ def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
 
         n_files    = len(tmp_paths)
         n_stations = len(station_matches)
+        recv_note  = f" (received {n_received} in this drop)" if n_received != n_files else ""
         status_msg = (
-            f"Loaded {n_files} file(s) · "
+            f"Loaded {n_files} file(s){recv_note} · "
             f"{len(df_all):,} data points · "
             f"{n_stations} CTD stations matched"
         )
