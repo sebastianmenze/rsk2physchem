@@ -816,10 +816,11 @@ right_panel = dbc.Card([
                         value=[0, 100],
                         marks={},
                         allowCross=False,
+                        allow_direct_input=False,
                         tooltip={"placement": "bottom", "always_visible": False},
                         className="mt-1",
                     ),
-                ], style={"paddingLeft": "8px", "paddingRight": "8px"}),
+                ], style={"paddingLeft": "50px", "paddingRight": "10px"}),
             ], width=6, className="ps-0"),
         ], style={"flexShrink": "0"}),
 
