@@ -20,7 +20,7 @@ from plotly.subplots import make_subplots
 from scipy.signal import find_peaks
 
 import dash
-from dash import dcc, html, Input, Output, State, callback, no_update, ctx
+from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL
 import dash_leaflet as dl
 import dash_bootstrap_components as dbc
 
@@ -623,18 +623,32 @@ def build_map_markers(station_matches, current_index):
             shadowUrl="https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png",
             iconSize=[25, 41], iconAnchor=[12, 41], popupAnchor=[1, -34],
         )
-        popup_text = (
-            f"<b>{si['name']}</b><br>"
-            f"Activity: {si['activityNumber']}<br>"
-            f"{si['startTime']}<br>"
-            f"Lat: {lat:.4f}  Lon: {lon:.4f}"
+        popup = dl.Popup(
+            html.Div([
+                html.Div(si["name"],
+                         style={"fontWeight": "bold", "fontSize": "13px",
+                                "marginBottom": "4px"}),
+                html.Table([
+                    html.Tr([html.Td("Activity", style={"color": "#888", "paddingRight": "8px"}),
+                             html.Td(si["activityNumber"])]),
+                    html.Tr([html.Td("Time",     style={"color": "#888", "paddingRight": "8px"}),
+                             html.Td(str(si["startTime"])[:19])]),
+                    html.Tr([html.Td("Lat",      style={"color": "#888", "paddingRight": "8px"}),
+                             html.Td(f"{lat:.4f}°")]),
+                    html.Tr([html.Td("Lon",      style={"color": "#888", "paddingRight": "8px"}),
+                             html.Td(f"{lon:.4f}°")]),
+                ], style={"fontSize": "12px", "borderCollapse": "collapse"}),
+                html.Div("Double-click to navigate",
+                         style={"fontSize": "11px", "color": "#aaa",
+                                "marginTop": "6px", "fontStyle": "italic"}),
+            ], style={"minWidth": "160px"})
         )
         markers.append(
             dl.Marker(
                 position=[lat, lon],
                 icon=icon,
                 id={"type": "station-marker", "index": i},
-                children=dl.Popup(popup_text),
+                children=popup,
             )
         )
     return markers
@@ -984,30 +998,35 @@ def process_uploaded_files(contents_list, filenames):
                 f"Error: {e}", "", "", "", "")
 
 
-# ── Navigation
+# ── Navigation (buttons + map double-click)
 @app.callback(
     Output("store-current-index", "data"),
     Output("store-excluded",      "data"),
     Input("btn-prev",  "n_clicks"),
     Input("btn-next",  "n_clicks"),
     Input("btn-clear-excl", "n_clicks"),
+    Input({"type": "station-marker", "index": ALL}, "n_dblclicks"),
     State("store-current-index",  "data"),
     State("store-station-matches","data"),
     State("store-excluded",       "data"),
     prevent_initial_call=True,
 )
-def navigate(n_prev, n_next, n_clear, current_idx, station_matches, excluded):
+def navigate(n_prev, n_next, n_clear, marker_dblclicks,
+             current_idx, station_matches, excluded):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
     n = len(keys)
     if triggered == "btn-prev":
-        new_idx = max(0, current_idx - 1)
-        return new_idx, []   # clear exclusions on station change
+        return max(0, current_idx - 1), []
     if triggered == "btn-next":
-        new_idx = min(n - 1, current_idx + 1)
-        return new_idx, []
+        return min(n - 1, current_idx + 1), []
     if triggered == "btn-clear-excl":
         return current_idx, []
+    # Map double-click: triggered_id is a dict {"type": "station-marker", "index": i}
+    if isinstance(triggered, dict) and triggered.get("type") == "station-marker":
+        clicked_idx = triggered["index"]
+        if any(v for v in marker_dblclicks if v):
+            return clicked_idx, []
     return current_idx, excluded
 
 
