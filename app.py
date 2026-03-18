@@ -474,12 +474,12 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
                 **kw,
             ), row=1, col=col_i)
 
-        # Excluded (red X)
+        # Excluded (blue X)
         if excl_list:
             fig.add_trace(go.Scatter(
                 x=df_profile.loc[excl_list, col_name].tolist(),
                 y=(-df_profile.loc[excl_list, "depth"]).tolist(),
-                mode="markers", marker=dict(size=6, color="red", symbol="x"),
+                mode="markers", marker=dict(size=6, color="blue", symbol="x"),
                 showlegend=False,
             ), row=1, col=col_i)
 
