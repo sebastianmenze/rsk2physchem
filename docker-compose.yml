@@ -2,7 +2,7 @@ services:
   ctd-browser:
     build: .
     ports:
-      - "127.0.0.1:8050:8050"   # only reachable via nginx on the same host
+      - "8050:8050"
     restart: unless-stopped
     env_file:
       - .env
