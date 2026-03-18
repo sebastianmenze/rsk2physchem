@@ -872,9 +872,10 @@ app.layout = dbc.Container([
     Output("input-platform",        "value"),
     Input("upload-rsk", "contents"),
     State("upload-rsk", "filename"),
+    State("store-tmpfiles", "data"),
     prevent_initial_call=True,
 )
-def process_uploaded_files(contents_list, filenames):
+def process_uploaded_files(contents_list, filenames, existing_tmp_paths):
     if not contents_list:
         return no_update
 
@@ -882,8 +883,12 @@ def process_uploaded_files(contents_list, filenames):
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "")
 
-    # Save uploads to temp files
-    tmp_paths = []
+    # Dash fires once per file when multiple files are dropped; accumulate
+    # temp paths across firings so all files are processed together.
+    tmp_paths = list(existing_tmp_paths or [])
+    if isinstance(contents_list, str):
+        contents_list = [contents_list]
+        filenames = [filenames]
     for content, fname in zip(contents_list, filenames):
         _, b64 = content.split(",", 1)
         raw = base64.b64decode(b64)
