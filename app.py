@@ -37,14 +37,25 @@ try:
 except ImportError:
     BOTO3_AVAILABLE = False
 
+# ── Configuration from environment (see .env)
+TOKTLOGGER_CRUISES_URL    = os.getenv("TOKTLOGGER_CRUISES_URL",
+                                       "http://toktlogger-hansb.hi.no/api/cruises/all")
+TOKTLOGGER_ACTIVITIES_URL = os.getenv("TOKTLOGGER_ACTIVITIES_URL",
+                                       "http://toktlogger-hansb.hi.no/api/activities/inPeriod")
+S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL",      "https://s3.hi.no")
+S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID",     "")
+S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY", "")
+S3_BUCKET                 = os.getenv("S3_BUCKET",            "transient-data")
+S3_DEST_PREFIX            = os.getenv("S3_DEST_PREFIX",       "physchem/incoming/regular_stations/test/")
+
 
 # ─────────────────────────────────────────────
 # Data helpers  (ported from original script)
 # ─────────────────────────────────────────────
 
-def get_cruises_from_api(base_url="http://toktlogger-hansb.hi.no/api/cruises/all"):
+def get_cruises_from_api(base_url=None):
     try:
-        resp = requests.get(base_url, params={"format": "json"}, timeout=10)
+        resp = requests.get(base_url or TOKTLOGGER_CRUISES_URL, params={"format": "json"}, timeout=10)
         resp.raise_for_status()
         df = pd.DataFrame(resp.json())
         if len(df) and "startTime" in df.columns:
@@ -83,9 +94,8 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
 
 
-def get_activities_from_api(after, before,
-                             base_url="http://toktlogger-hansb.hi.no/api/activities/inPeriod"):
-    resp = requests.get(base_url,
+def get_activities_from_api(after, before, base_url=None):
+    resp = requests.get(base_url or TOKTLOGGER_ACTIVITIES_URL,
                         params={"after": after, "before": before, "format": "json"},
                         timeout=15)
     resp.raise_for_status()
@@ -1300,19 +1310,18 @@ def upload_to_s3(n_clicks, npc_json, meta_json):
 
         s3 = boto3.resource(
             service_name="s3",
-            endpoint_url="https://s3.hi.no",
-            aws_access_key_id="6lpqTL2pz42cRefC1R4c",
-            aws_secret_access_key="W0eUlbebUidLGiKXM0iQdS8WL0slhMDdirZ6kICj",
+            endpoint_url=S3_ENDPOINT_URL,
+            aws_access_key_id=S3_ACCESS_KEY_ID,
+            aws_secret_access_key=S3_SECRET_ACCESS_KEY,
         )
 
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".npc") as f:
             tmp_path = f.name
         npc_write(meta, df_npc, tmp_path)
 
-        dest = (f"physchem/incoming/regular_stations/test//"
-                f"{os.path.basename(tmp_path)}")
+        dest = f"{S3_DEST_PREFIX.rstrip('/')}/{os.path.basename(tmp_path)}"
         with open(tmp_path, "rb") as fh:
-            s3.Bucket("transient-data").put_object(Key=dest, Body=fh)
+            s3.Bucket(S3_BUCKET).put_object(Key=dest, Body=fh)
         os.unlink(tmp_path)
         return f"Uploaded successfully → {dest}"
     except Exception as e:
