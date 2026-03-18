@@ -93,6 +93,46 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
 
 
+def check_if_operation_in_physchem(meta):
+    """Return True if this operation already exists in the PhysChem database."""
+    try:
+        platform       = meta.get("mission.platform", "")
+        mission_number = meta.get("mission.missionNumber", "")
+        time_start     = meta.get("operation.timeStart", "")
+        if not platform or not mission_number or not time_start:
+            return False
+
+        resp = requests.get(
+            f"{PHYSCHEM_API_URL}/mission/list",
+            params={"platform": platform},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        df_missions = pd.DataFrame(resp.json())
+        if df_missions.empty:
+            return False
+
+        match = df_missions["missionNumber"] == int(mission_number)
+        if match.sum() == 0:
+            return False
+
+        mission_id = df_missions.loc[match, "id"].values[0]
+
+        resp2 = requests.get(
+            f"{PHYSCHEM_API_URL}/mission/{mission_id}/operation/list",
+            params={"extend": "false", "instrumentTypeList": "false"},
+            timeout=10,
+        )
+        resp2.raise_for_status()
+        df_ops = pd.DataFrame(resp2.json())
+        if df_ops.empty or "timeStart" not in df_ops.columns:
+            return False
+
+        return bool(np.isin(df_ops["timeStart"], time_start).sum() > 0)
+    except Exception:
+        return False
+
+
 def get_mission_number_from_physchem(cruise_number, platform, year):
     """Look up missionNumber from the physchem API by matching cruise number."""
     try:
@@ -1304,9 +1344,28 @@ def download_npc(n_clicks, npc_json, meta_json, current_idx, station_matches):
         return no_update, f"Download error: {e}"
 
 
+# ── Check if profile already in PhysChem (runs whenever NPC meta changes)
+@app.callback(
+    Output("btn-upload-s3",  "disabled"),
+    Output("action-status",  "children"),
+    Input("store-npc-meta",  "data"),
+    prevent_initial_call=True,
+)
+def check_physchem_on_profile_change(meta_json):
+    if not meta_json or meta_json == "{}":
+        return False, ""
+    try:
+        meta = json.loads(meta_json)
+    except Exception:
+        return False, ""
+    if check_if_operation_in_physchem(meta):
+        return True, "⚠ This profile is already uploaded to PhysChem."
+    return False, ""
+
+
 # ── Upload to S3
 @app.callback(
-    Output("action-status", "children"),
+    Output("action-status", "children", allow_duplicate=True),
     Input("btn-upload-s3",  "n_clicks"),
     State("store-npc",      "data"),
     State("store-npc-meta", "data"),
