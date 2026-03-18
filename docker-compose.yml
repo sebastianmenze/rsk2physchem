@@ -1,0 +1,8 @@
+services:
+  ctd-browser:
+    build: .
+    ports:
+      - "8050:8050"
+    restart: unless-stopped
+    env_file:
+      - .env
