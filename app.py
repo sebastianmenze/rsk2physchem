@@ -5,6 +5,8 @@ Ports the PyQt5 CTD Profile Browser to a Dash web app with Leaflet maps.
 
 import os
 import re
+from dotenv import load_dotenv
+load_dotenv()
 import uuid
 import json
 import base64
