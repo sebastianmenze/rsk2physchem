@@ -40,6 +40,7 @@ except ImportError:
 # ── Configuration from environment (see .env)
 TOKTLOGGER_CRUISES_URL    = os.getenv("TOKTLOGGER_CRUISES_URL")
 TOKTLOGGER_ACTIVITIES_URL = os.getenv("TOKTLOGGER_ACTIVITIES_URL")
+PHYSCHEM_API_URL          = os.getenv("PHYSCHEM_API_URL", "https://physchem-api.hi.no")
 S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL")
 S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY")
@@ -90,6 +91,20 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     if not matches:
         return None
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
+
+
+def get_mission_number_from_physchem(cruise_number, platform, year):
+    """Look up missionNumber from the physchem API by matching cruise number."""
+    try:
+        url  = f"{PHYSCHEM_API_URL}/mission/list"
+        resp = requests.get(url, params={"startYear": year, "platform": platform}, timeout=10)
+        resp.raise_for_status()
+        for mission in resp.json():
+            if str(mission.get("cruise", "")) == str(cruise_number):
+                return str(mission["missionNumber"])
+    except Exception:
+        pass
+    return ""
 
 
 def get_activities_from_api(after, before, base_url=None):
@@ -868,6 +883,8 @@ def process_uploaded_files(contents_list, filenames):
                 cruise_number = str(matched.get("cruiseNumber", ""))
                 vessel_name   = str(matched.get("vesselName",   ""))
                 platform      = str(matched.get("platform",     ""))
+                year          = t_min.year
+                mission_number = get_mission_number_from_physchem(cruise_number, platform, year)
 
         df_tk = get_activities_from_api(after_str, before_str)
 
