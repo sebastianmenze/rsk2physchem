@@ -9,8 +9,6 @@ import uuid
 import json
 import base64
 import tempfile
-import threading
-import time
 from datetime import datetime
 from io import StringIO
 
@@ -859,17 +857,6 @@ app.layout = dbc.Container([
 
 # ─────────────────────────────────────────────
 # Server-side upload accumulator
-# Dash 4 fires one callback per dropped file even for a simultaneous
-# multi-file drop, so store-based accumulation races.  We collect
-# files in a server-side structure protected by a lock and use a short
-# debounce sleep so the last-arriving callback processes the full batch.
-# ─────────────────────────────────────────────
-_upload_lock  = threading.Lock()
-_upload_state = {"counter": 0, "files": [], "last_time": 0.0}
-DEBOUNCE_WAIT = 0.6   # seconds – wait for concurrent callbacks to arrive
-BATCH_WINDOW  = 3.0   # seconds – gap larger than this = new upload session
-
-
 # ─────────────────────────────────────────────
 # Callbacks
 # ─────────────────────────────────────────────
@@ -897,7 +884,7 @@ def process_uploaded_files(contents_list, filenames):
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "")
 
-    # Normalise to lists (Dash 4 fires one callback per file)
+    # Normalise to lists (single-file upload may pass bare strings)
     if isinstance(contents_list, str):
         contents_list = [contents_list]
     if not isinstance(filenames, list):
@@ -905,35 +892,15 @@ def process_uploaded_files(contents_list, filenames):
     while len(filenames) < len(contents_list):
         filenames.append(f"file_{len(filenames)+1}.rsk")
 
-    # ── Save incoming files to disk and register in server-side accumulator
-    new_paths = []
+    # Save uploads to temp files
+    tmp_paths = []
     for content, fname in zip(contents_list, filenames):
         _, b64 = content.split(",", 1)
         raw = base64.b64decode(b64)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".rsk")
         tmp.write(raw)
         tmp.close()
-        new_paths.append(tmp.name)
-
-    with _upload_lock:
-        now = time.monotonic()
-        if now - _upload_state["last_time"] > BATCH_WINDOW:
-            _upload_state["files"].clear()      # new session
-        _upload_state["files"].extend(new_paths)
-        _upload_state["counter"] += 1
-        _upload_state["last_time"] = now
-        my_counter = _upload_state["counter"]
-
-    # Wait for sibling callbacks from the same drop event to register
-    time.sleep(DEBOUNCE_WAIT)
-
-    with _upload_lock:
-        if _upload_state["counter"] > my_counter:
-            # A later callback arrived after us – let it do the processing
-            return no_update
-        # We are the last callback in this batch – grab all files
-        tmp_paths = list(_upload_state["files"])
-        _upload_state["files"].clear()
+        tmp_paths.append(tmp.name)
 
     print(f"[upload] processing {len(tmp_paths)} file(s)", flush=True)
 
