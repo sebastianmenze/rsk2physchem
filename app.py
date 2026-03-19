@@ -1378,6 +1378,9 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 )
 def update_profile(current_idx, excluded, npc_json, span_range,
                    rsk_df_json, station_matches):
+    print(f"[update_profile] idx={current_idx} excl={excluded} span={span_range} "
+          f"npc={'<set>' if npc_json else '<empty>'} "
+          f"has_matches={bool(station_matches)} has_df={bool(rsk_df_json)}", flush=True)
     empty = go.Figure()
     empty.update_layout(
         margin=dict(l=40, r=20, t=50, b=40),
@@ -1387,6 +1390,7 @@ def update_profile(current_idx, excluded, npc_json, span_range,
                           showarrow=False, font=dict(size=18))],
     )
     if not station_matches or not rsk_df_json:
+        print(f"[update_profile] early-exit: station_matches={type(station_matches)} rsk_df_json={type(rsk_df_json)}", flush=True)
         return empty
 
     try:
@@ -1411,7 +1415,9 @@ def update_profile(current_idx, excluded, npc_json, span_range,
         )
         fig.update_layout(title_text=key)
         return fig
-    except Exception:
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print(f"[update_profile ERROR] {e}", flush=True)
         return empty
 
 
