@@ -1368,22 +1368,16 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 
 
 # ── Profile figure (4 panels)
-# Triggered by store-npc-meta rather than store-npc: meta always receives a
-# fresh uuid.uuid1() on every compute_npc run, so the trigger fires even when
-# the NPC data is byte-for-byte identical (e.g. an exclusion that falls
-# entirely within an over-sampled bin and doesn't shift its average).
 @app.callback(
     Output("profile-plot", "figure"),
-    Input("store-npc-meta",        "data"),
-    State("store-npc",             "data"),
-    State("store-current-index",   "data"),
-    State("store-excluded",        "data"),
+    Input("store-current-index",   "data"),
+    Input("store-excluded",        "data"),
+    Input("store-npc",             "data"),
     State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
-    prevent_initial_call=True,
 )
-def update_profile(_npc_meta, npc_json, current_idx, excluded, span_range,
+def update_profile(current_idx, excluded, npc_json, span_range,
                    rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
