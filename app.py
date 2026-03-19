@@ -874,11 +874,7 @@ right_panel = dbc.Card([
 
         # ── Status bar (fixed, above profile plots)
         html.Div([
-            dcc.Loading(
-                html.Div(id="npc-loading-target"),
-                type="circle", color="#17a2b8",
-                style={"display": "inline-block", "marginRight": "6px"},
-            ),
+            html.Div(id="npc-loading-target", style={"display": "inline-block", "marginRight": "6px"}),
             html.Span(id="status-bar", className="text-info small"),
         ], style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px",
                   "display": "flex", "alignItems": "center"}),
@@ -1472,14 +1468,21 @@ def download_npc(n_clicks, span_range, excluded, param_vals,
     Output("btn-download-npc", "disabled"),
     Output("btn-upload-s3",    "disabled"),
     Output("action-status",    "children"),
-    Input("store-npc",         "data"),
-    Input("store-npc-meta",    "data"),
+    Input("store-npc",             "data"),
+    Input("store-npc-meta",        "data"),
+    Input("input-cruise-number",   "value"),
+    Input("input-vessel-name",     "value"),
+    Input("input-mission-number",  "value"),
+    Input("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def check_physchem_on_profile_change(npc_json, meta_json):
+def check_physchem_on_profile_change(npc_json, meta_json,
+                                     cruise_number, vessel_name,
+                                     mission_number, platform):
     no_npc = not npc_json or npc_json == "{}"
     if no_npc:
         return True, True, ""
+    fields_complete = all([cruise_number, vessel_name, mission_number, platform])
     # NPC exists – check if already in PhysChem
     try:
         meta = json.loads(meta_json) if meta_json and meta_json != "{}" else {}
@@ -1487,7 +1490,7 @@ def check_physchem_on_profile_change(npc_json, meta_json):
         meta = {}
     if meta and check_if_operation_in_physchem(meta):
         return False, True, "⚠ This profile is already uploaded to PhysChem."
-    return False, False, ""
+    return False, not fields_complete, ""
 
 
 # ── Upload to S3
