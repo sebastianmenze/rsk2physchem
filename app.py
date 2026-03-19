@@ -741,7 +741,11 @@ left_panel = dbc.Card([
             },
             multiple=True,
         ),
-        html.Div(id="upload-status", className="text-muted small mb-2"),
+        dcc.Loading(
+            html.Div(id="upload-status", className="text-muted small mb-2"),
+            type="circle", fullscreen=True,
+            style={"backgroundColor": "rgba(0,0,0,0.3)"},
+        ),
 
         html.Hr(),
 
@@ -869,9 +873,15 @@ right_panel = dbc.Card([
         ], style={"flexShrink": "0"}),
 
         # ── Status bar (fixed, above profile plots)
-        html.Div(id="status-bar",
-                 className="text-info small",
-                 style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px"}),
+        html.Div([
+            dcc.Loading(
+                html.Div(id="npc-loading-target"),
+                type="circle", color="#17a2b8",
+                style={"display": "inline-block", "marginRight": "6px"},
+            ),
+            html.Span(id="status-bar", className="text-info small"),
+        ], style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px",
+                  "display": "flex", "alignItems": "center"}),
 
         # ── Profile plots – fill all remaining vertical space
         dcc.Loading(
@@ -1202,9 +1212,10 @@ def update_span_from_timeseries(relayout_data, current_idx, rsk_df_json,
 
 # ── Compute NPC whenever span range or exclusions change
 @app.callback(
-    Output("store-npc",          "data"),
-    Output("store-npc-meta",     "data"),
-    Output("store-span-indices", "data"),
+    Output("store-npc",            "data"),
+    Output("store-npc-meta",       "data"),
+    Output("store-span-indices",   "data"),
+    Output("npc-loading-target",   "children"),
     Input("store-span-range",   "data"),
     Input("store-excluded",     "data"),
     Input("checklist-params",   "value"),
@@ -1224,7 +1235,7 @@ def compute_npc(span_range, excluded, param_vals,
                 cruise_times,
                 cruise_number, vessel_name, mission_number, platform):
     if not station_matches or not rsk_df_json or not span_range:
-        return {}, {}, []
+        return {}, {}, [], ""
 
     span_start, span_end = span_range
     keys        = list(station_matches.keys())
@@ -1237,7 +1248,7 @@ def compute_npc(span_range, excluded, param_vals,
 
     new_span = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
     if not new_span:
-        return {}, {}, []
+        return {}, {}, [], ""
 
     ct_start = cruise_times.get("start") if cruise_times else None
     ct_end   = cruise_times.get("end")   if cruise_times else None
@@ -1255,7 +1266,7 @@ def compute_npc(span_range, excluded, param_vals,
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
     meta_json = json.dumps(meta)
-    return npc_json, meta_json, new_span
+    return npc_json, meta_json, new_span, ""
 
 
 # ── Timeseries figure (depth vs time with span highlight)
