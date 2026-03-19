@@ -1407,21 +1407,48 @@ def update_profile(current_idx, excluded, npc_json, span_range,
     Output("download-npc",  "data"),
     Output("action-status", "children", allow_duplicate=True),
     Input("btn-download-npc", "n_clicks"),
-    State("store-npc",       "data"),
-    State("store-npc-meta",  "data"),
-    State("store-current-index",  "data"),
-    State("store-station-matches","data"),
+    State("store-span-range",      "data"),
+    State("store-excluded",        "data"),
+    State("checklist-params",      "value"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+    State("store-rsk-df",          "data"),
+    State("store-rsk-meta",        "data"),
+    State("store-cruise-times",    "data"),
+    State("input-cruise-number",   "value"),
+    State("input-vessel-name",     "value"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def download_npc(n_clicks, npc_json, meta_json, current_idx, station_matches):
-    if not npc_json or npc_json == "{}":
+def download_npc(n_clicks, span_range, excluded, param_vals,
+                 current_idx, station_matches, rsk_df_json, rsk_meta,
+                 cruise_times, cruise_number, vessel_name, mission_number, platform):
+    if not station_matches or not rsk_df_json or not span_range:
         return no_update, "No NPC data available – select a span first."
     try:
-        df_npc = pd.read_json(StringIO(npc_json), orient="split")
-        meta   = json.loads(meta_json)
-        keys   = list(station_matches.keys())
-        key    = keys[current_idx]
-        fname  = f"{key}_binned.npc"
+        span_start, span_end = span_range
+        keys        = list(station_matches.keys())
+        key         = keys[current_idx]
+        data        = station_matches[key]
+        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
+        if not new_span:
+            return no_update, "No NPC data available – select a span first."
+        ct_start = cruise_times.get("start") if cruise_times else None
+        ct_end   = cruise_times.get("end")   if cruise_times else None
+        df_npc, meta = calculate_df_npc(
+            df_profile, new_span, set(excluded or []),
+            "o2" in (param_vals or []),
+            "chl" in (param_vals or []),
+            ct_start, ct_end,
+            cruise_number or "", vessel_name or "",
+            mission_number or "", platform or "",
+            current_idx + 1, rsk_meta or {},
+            data["station_info"],
+        )
+        fname   = f"{key}_binned.npc"
         content = npc_to_string(meta, df_npc)
         return (dict(content=content, filename=fname, type="text/plain"),
                 f"Downloaded {fname}")
@@ -1456,18 +1483,48 @@ def check_physchem_on_profile_change(npc_json, meta_json):
 @app.callback(
     Output("action-status", "children", allow_duplicate=True),
     Input("btn-upload-s3",  "n_clicks"),
-    State("store-npc",      "data"),
-    State("store-npc-meta", "data"),
+    State("store-span-range",      "data"),
+    State("store-excluded",        "data"),
+    State("checklist-params",      "value"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+    State("store-rsk-df",          "data"),
+    State("store-rsk-meta",        "data"),
+    State("store-cruise-times",    "data"),
+    State("input-cruise-number",   "value"),
+    State("input-vessel-name",     "value"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def upload_to_s3(n_clicks, npc_json, meta_json):
+def upload_to_s3(n_clicks, span_range, excluded, param_vals,
+                 current_idx, station_matches, rsk_df_json, rsk_meta,
+                 cruise_times, cruise_number, vessel_name, mission_number, platform):
     if not BOTO3_AVAILABLE:
         return "boto3 not installed – cannot upload."
-    if not npc_json or npc_json == "{}":
+    if not station_matches or not rsk_df_json or not span_range:
         return "No NPC data available – select a span first."
     try:
-        df_npc = pd.read_json(StringIO(npc_json), orient="split")
-        meta   = json.loads(meta_json)
+        span_start, span_end = span_range
+        keys        = list(station_matches.keys())
+        data        = station_matches[keys[current_idx]]
+        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
+        if not new_span:
+            return "No NPC data available – select a span first."
+        ct_start = cruise_times.get("start") if cruise_times else None
+        ct_end   = cruise_times.get("end")   if cruise_times else None
+        df_npc, meta = calculate_df_npc(
+            df_profile, new_span, set(excluded or []),
+            "o2" in (param_vals or []),
+            "chl" in (param_vals or []),
+            ct_start, ct_end,
+            cruise_number or "", vessel_name or "",
+            mission_number or "", platform or "",
+            current_idx + 1, rsk_meta or {},
+            data["station_info"],
+        )
 
         os.environ["AWS_REQUEST_CHECKSUM_CALCULATION"]  = "when_required"
         os.environ["AWS_RESPONSE_CHECKSUM_VALIDATION"]  = "when_required"
