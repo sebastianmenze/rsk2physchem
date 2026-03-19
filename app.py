@@ -730,7 +730,7 @@ left_panel = dbc.Card([
     dbc.CardBody([
 
         # ── File upload
-        dbc.Label("Upload RSK Files", className="fw-bold"),
+        dbc.Label("Upload RSK Files from Hans Brattstrøm cruise", className="fw-bold"),
         dcc.Upload(
             id="upload-rsk",
             children=html.Div(["Drag & drop or ", html.A("select RSK files")]),
