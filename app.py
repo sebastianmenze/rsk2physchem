@@ -575,7 +575,7 @@ def build_timeseries_figure(df_profile, span_start, span_end):
 
     # Selected span
     if span_start is not None and span_end is not None:
-        sp_idx = list(range(span_start, min(span_end + 1, len(df_profile))))
+        sp_idx = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
         if sp_idx:
             sp_df = df_profile.iloc[sp_idx]
             sp_ts = sp_df["timestamp"].astype(str).tolist()
@@ -602,6 +602,7 @@ def build_timeseries_figure(df_profile, span_start, span_end):
         yaxis_title="Depth (m)",
         title_text="Depth vs Time – drag to select span",
         title_font_size=12,
+        uirevision=f"{span_start}_{span_end}",
     )
     return fig
 
@@ -726,11 +727,10 @@ login_modal = dbc.Modal([
 ], id="login-modal", is_open=True, backdrop="static", keyboard=False, centered=True)
 
 left_panel = dbc.Card([
-    dbc.CardHeader(html.H5("CTD Profile Browser", className="mb-0")),
     dbc.CardBody([
 
         # ── File upload
-        dbc.Label("Upload RSK Files", className="fw-bold"),
+        dbc.Label("Upload RSK Files from Hans Brattstrøm cruise", className="fw-bold"),
         dcc.Upload(
             id="upload-rsk",
             children=html.Div(["Drag & drop or ", html.A("select RSK files")]),
@@ -741,7 +741,11 @@ left_panel = dbc.Card([
             },
             multiple=True,
         ),
-        html.Div(id="upload-status", className="text-muted small mb-2"),
+        dcc.Loading(
+            html.Div(id="upload-status", className="text-muted small mb-2"),
+            type="circle", fullscreen=True,
+            style={"backgroundColor": "rgba(0,0,0,0.3)"},
+        ),
 
         html.Hr(),
 
@@ -815,9 +819,9 @@ left_panel = dbc.Card([
         # ── Actions
         dbc.Label("Actions", className="fw-bold"),
         dbc.Button("Download NPC File", id="btn-download-npc",
-                   color="success", size="sm", className="w-100 mb-1"),
+                   color="success", size="sm", className="w-100 mb-1", disabled=True),
         dbc.Button("Upload to PhysChem (S3)", id="btn-upload-s3",
-                   color="primary", size="sm", className="w-100 mb-1"),
+                   color="primary", size="sm", className="w-100 mb-1", disabled=True),
         html.Div(id="action-status", className="small mt-1"),
 
         dcc.Download(id="download-npc"),
@@ -869,9 +873,11 @@ right_panel = dbc.Card([
         ], style={"flexShrink": "0"}),
 
         # ── Status bar (fixed, above profile plots)
-        html.Div(id="status-bar",
-                 className="text-info small",
-                 style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px"}),
+        html.Div([
+            html.Div(id="npc-loading-target", style={"display": "inline-block", "marginRight": "6px"}),
+            html.Span(id="status-bar", className="text-info small"),
+        ], style={"flexShrink": "0", "minHeight": "20px", "paddingTop": "2px",
+                  "display": "flex", "alignItems": "center"}),
 
         # ── Profile plots – fill all remaining vertical space
         dcc.Loading(
@@ -1202,9 +1208,10 @@ def update_span_from_timeseries(relayout_data, current_idx, rsk_df_json,
 
 # ── Compute NPC whenever span range or exclusions change
 @app.callback(
-    Output("store-npc",          "data"),
-    Output("store-npc-meta",     "data"),
-    Output("store-span-indices", "data"),
+    Output("store-npc",            "data"),
+    Output("store-npc-meta",       "data"),
+    Output("store-span-indices",   "data"),
+    Output("npc-loading-target",   "children"),
     Input("store-span-range",   "data"),
     Input("store-excluded",     "data"),
     Input("checklist-params",   "value"),
@@ -1224,7 +1231,7 @@ def compute_npc(span_range, excluded, param_vals,
                 cruise_times,
                 cruise_number, vessel_name, mission_number, platform):
     if not station_matches or not rsk_df_json or not span_range:
-        return {}, {}, []
+        return {}, {}, [], ""
 
     span_start, span_end = span_range
     keys        = list(station_matches.keys())
@@ -1235,9 +1242,9 @@ def compute_npc(span_range, excluded, param_vals,
     df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
     df_profile  = df_all.loc[df_indices].copy().reset_index(drop=True)
 
-    new_span = list(range(span_start, min(span_end + 1, len(df_profile))))
+    new_span = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
     if not new_span:
-        return {}, {}, []
+        return {}, {}, [], ""
 
     ct_start = cruise_times.get("start") if cruise_times else None
     ct_end   = cruise_times.get("end")   if cruise_times else None
@@ -1255,18 +1262,18 @@ def compute_npc(span_range, excluded, param_vals,
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
     meta_json = json.dumps(meta)
-    return npc_json, meta_json, new_span
+    return npc_json, meta_json, new_span, ""
 
 
 # ── Timeseries figure (depth vs time with span highlight)
 @app.callback(
     Output("timeseries-plot", "figure"),
     Input("store-current-index",   "data"),
-    Input("store-span-range",      "data"),
+    Input("span-slider",           "value"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
 )
-def update_timeseries(current_idx, span_range, rsk_df_json, station_matches):
+def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
         height=250, margin=dict(l=50, r=10, t=30, b=40),
@@ -1281,8 +1288,8 @@ def update_timeseries(current_idx, span_range, rsk_df_json, station_matches):
         data       = station_matches[keys[current_idx]]
         df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
         df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
-        span_start = span_range[0] if span_range else None
-        span_end   = span_range[1] if span_range else None
+        span_start = int(slider_value[0]) if slider_value else None
+        span_end   = int(slider_value[1]) if slider_value else None
         return build_timeseries_figure(df_profile, span_start, span_end)
     except Exception:
         return empty
@@ -1407,21 +1414,48 @@ def update_profile(current_idx, excluded, npc_json, span_range,
     Output("download-npc",  "data"),
     Output("action-status", "children", allow_duplicate=True),
     Input("btn-download-npc", "n_clicks"),
-    State("store-npc",       "data"),
-    State("store-npc-meta",  "data"),
-    State("store-current-index",  "data"),
-    State("store-station-matches","data"),
+    State("store-span-range",      "data"),
+    State("store-excluded",        "data"),
+    State("checklist-params",      "value"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+    State("store-rsk-df",          "data"),
+    State("store-rsk-meta",        "data"),
+    State("store-cruise-times",    "data"),
+    State("input-cruise-number",   "value"),
+    State("input-vessel-name",     "value"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def download_npc(n_clicks, npc_json, meta_json, current_idx, station_matches):
-    if not npc_json or npc_json == "{}":
+def download_npc(n_clicks, span_range, excluded, param_vals,
+                 current_idx, station_matches, rsk_df_json, rsk_meta,
+                 cruise_times, cruise_number, vessel_name, mission_number, platform):
+    if not station_matches or not rsk_df_json or not span_range:
         return no_update, "No NPC data available – select a span first."
     try:
-        df_npc = pd.read_json(StringIO(npc_json), orient="split")
-        meta   = json.loads(meta_json)
-        keys   = list(station_matches.keys())
-        key    = keys[current_idx]
-        fname  = f"{key}_binned.npc"
+        span_start, span_end = span_range
+        keys        = list(station_matches.keys())
+        key         = keys[current_idx]
+        data        = station_matches[key]
+        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
+        if not new_span:
+            return no_update, "No NPC data available – select a span first."
+        ct_start = cruise_times.get("start") if cruise_times else None
+        ct_end   = cruise_times.get("end")   if cruise_times else None
+        df_npc, meta = calculate_df_npc(
+            df_profile, new_span, set(excluded or []),
+            "o2" in (param_vals or []),
+            "chl" in (param_vals or []),
+            ct_start, ct_end,
+            cruise_number or "", vessel_name or "",
+            mission_number or "", platform or "",
+            current_idx + 1, rsk_meta or {},
+            data["station_info"],
+        )
+        fname   = f"{key}_binned.npc"
         content = npc_to_string(meta, df_npc)
         return (dict(content=content, filename=fname, type="text/plain"),
                 f"Downloaded {fname}")
@@ -1429,41 +1463,82 @@ def download_npc(n_clicks, npc_json, meta_json, current_idx, station_matches):
         return no_update, f"Download error: {e}"
 
 
-# ── Check if profile already in PhysChem (runs whenever NPC meta changes)
+# ── Enable/disable action buttons based on whether a valid NPC exists
 @app.callback(
-    Output("btn-upload-s3",  "disabled"),
-    Output("action-status",  "children"),
-    Input("store-npc-meta",  "data"),
+    Output("btn-download-npc", "disabled"),
+    Output("btn-upload-s3",    "disabled"),
+    Output("action-status",    "children"),
+    Input("store-npc",             "data"),
+    Input("store-npc-meta",        "data"),
+    Input("input-cruise-number",   "value"),
+    Input("input-vessel-name",     "value"),
+    Input("input-mission-number",  "value"),
+    Input("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def check_physchem_on_profile_change(meta_json):
-    if not meta_json or meta_json == "{}":
-        return False, ""
+def check_physchem_on_profile_change(npc_json, meta_json,
+                                     cruise_number, vessel_name,
+                                     mission_number, platform):
+    no_npc = not npc_json or npc_json == "{}"
+    if no_npc:
+        return True, True, ""
+    fields_complete = all([cruise_number, vessel_name, mission_number, platform])
+    # NPC exists – check if already in PhysChem
     try:
-        meta = json.loads(meta_json)
+        meta = json.loads(meta_json) if meta_json and meta_json != "{}" else {}
     except Exception:
-        return False, ""
-    if check_if_operation_in_physchem(meta):
-        return True, "⚠ This profile is already uploaded to PhysChem."
-    return False, ""
+        meta = {}
+    if meta and check_if_operation_in_physchem(meta):
+        return False, True, "⚠ This profile is already uploaded to PhysChem."
+    return False, not fields_complete, ""
 
 
 # ── Upload to S3
 @app.callback(
     Output("action-status", "children", allow_duplicate=True),
     Input("btn-upload-s3",  "n_clicks"),
-    State("store-npc",      "data"),
-    State("store-npc-meta", "data"),
+    State("store-span-range",      "data"),
+    State("store-excluded",        "data"),
+    State("checklist-params",      "value"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+    State("store-rsk-df",          "data"),
+    State("store-rsk-meta",        "data"),
+    State("store-cruise-times",    "data"),
+    State("input-cruise-number",   "value"),
+    State("input-vessel-name",     "value"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def upload_to_s3(n_clicks, npc_json, meta_json):
+def upload_to_s3(n_clicks, span_range, excluded, param_vals,
+                 current_idx, station_matches, rsk_df_json, rsk_meta,
+                 cruise_times, cruise_number, vessel_name, mission_number, platform):
     if not BOTO3_AVAILABLE:
         return "boto3 not installed – cannot upload."
-    if not npc_json or npc_json == "{}":
+    if not station_matches or not rsk_df_json or not span_range:
         return "No NPC data available – select a span first."
     try:
-        df_npc = pd.read_json(StringIO(npc_json), orient="split")
-        meta   = json.loads(meta_json)
+        span_start, span_end = span_range
+        keys        = list(station_matches.keys())
+        data        = station_matches[keys[current_idx]]
+        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
+        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
+        if not new_span:
+            return "No NPC data available – select a span first."
+        ct_start = cruise_times.get("start") if cruise_times else None
+        ct_end   = cruise_times.get("end")   if cruise_times else None
+        df_npc, meta = calculate_df_npc(
+            df_profile, new_span, set(excluded or []),
+            "o2" in (param_vals or []),
+            "chl" in (param_vals or []),
+            ct_start, ct_end,
+            cruise_number or "", vessel_name or "",
+            mission_number or "", platform or "",
+            current_idx + 1, rsk_meta or {},
+            data["station_info"],
+        )
 
         os.environ["AWS_REQUEST_CHECKSUM_CALCULATION"]  = "when_required"
         os.environ["AWS_RESPONSE_CHECKSUM_VALIDATION"]  = "when_required"
