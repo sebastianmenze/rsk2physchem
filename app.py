@@ -1267,7 +1267,7 @@ def compute_npc(span_range, excluded, param_vals,
     )
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
-    meta_json = json.dumps(meta)
+    meta_json = json.dumps({**meta, "_ts": str(uuid.uuid1())})
     return npc_json, meta_json, new_span, ""
 
 
@@ -1367,20 +1367,23 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 
 
 # ── Profile figure (4 panels)
+# Triggered by store-npc-meta (which always receives a fresh uuid.uuid1() from
+# compute_npc) so this callback fires exactly once per compute run regardless
+# of whether the NPC data itself changed.  All other stores are State so we
+# never fire prematurely on navigation (idx changes before span/NPC are ready).
 @app.callback(
     Output("profile-plot", "figure"),
-    Input("store-current-index",   "data"),
-    Input("store-excluded",        "data"),
-    Input("store-npc",             "data"),
+    Input("store-npc-meta",        "data"),
+    State("store-npc",             "data"),
+    State("store-current-index",   "data"),
+    State("store-excluded",        "data"),
     State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
+    prevent_initial_call=True,
 )
-def update_profile(current_idx, excluded, npc_json, span_range,
+def update_profile(_npc_meta, npc_json, current_idx, excluded, span_range,
                    rsk_df_json, station_matches):
-    print(f"[update_profile] idx={current_idx} excl={excluded} span={span_range} "
-          f"npc={'<set>' if npc_json else '<empty>'} "
-          f"has_matches={bool(station_matches)} has_df={bool(rsk_df_json)}", flush=True)
     empty = go.Figure()
     empty.update_layout(
         margin=dict(l=40, r=20, t=50, b=40),
@@ -1390,7 +1393,6 @@ def update_profile(current_idx, excluded, npc_json, span_range,
                           showarrow=False, font=dict(size=18))],
     )
     if not station_matches or not rsk_df_json:
-        print(f"[update_profile] early-exit: station_matches={type(station_matches)} rsk_df_json={type(rsk_df_json)}", flush=True)
         return empty
 
     try:
@@ -1415,9 +1417,7 @@ def update_profile(current_idx, excluded, npc_json, span_range,
         )
         fig.update_layout(title_text=key)
         return fig
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        print(f"[update_profile ERROR] {e}", flush=True)
+    except Exception:
         return empty
 
 
