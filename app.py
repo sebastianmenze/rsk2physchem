@@ -824,6 +824,13 @@ left_panel = dbc.Card([
                    color="primary", size="sm", className="w-100 mb-1", disabled=True),
         html.Div(id="action-status", className="small mt-1"),
 
+        html.Div([
+            html.A("Documentation & Code",
+                   href="https://github.com/sebastianmenze/rsk2physchem",
+                   target="_blank",
+                   className="small text-muted"),
+        ], className="mt-2"),
+
         dcc.Download(id="download-npc"),
     ]),
 ], style={"height": "100vh", "overflowY": "auto"})
