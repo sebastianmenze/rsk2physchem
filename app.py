@@ -1116,13 +1116,12 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     return list(new_excl)
 
 
-# ── Initialise slider when station changes (also computes initial span range)
+# ── Initialise slider when station changes
 @app.callback(
     Output("span-slider",       "min"),
     Output("span-slider",       "max"),
     Output("span-slider",       "marks"),
     Output("span-slider",       "value"),
-    Output("store-span-range",  "data"),
     Input("store-current-index",   "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
@@ -1130,7 +1129,7 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
 )
 def init_slider(current_idx, rsk_df_json, station_matches):
     if not station_matches or not rsk_df_json:
-        return 0, 100, {}, [0, 100], [0, 100]
+        return 0, 100, {}, [0, 100]
 
     keys       = list(station_matches.keys())
     data       = station_matches[keys[current_idx]]
@@ -1138,7 +1137,7 @@ def init_slider(current_idx, rsk_df_json, station_matches):
     df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
     N          = len(df_profile)
     if N == 0:
-        return 0, 0, {}, [0, 0], [0, 0]
+        return 0, 0, {}, [0, 0]
 
     ix_down = detect_downcast(df_profile)
     if ix_down.any():
@@ -1155,7 +1154,7 @@ def init_slider(current_idx, rsk_df_json, station_matches):
         t   = pd.Timestamp(ts.iloc[idx])
         marks[idx] = {"label": t.strftime("%H:%M"), "style": {"fontSize": "10px"}}
 
-    return 0, N - 1, marks, [span_start, span_end], [span_start, span_end]
+    return 0, N - 1, marks, [span_start, span_end]
 
 
 # ── Slider interaction → update span range store
@@ -1275,12 +1274,13 @@ def compute_npc(span_range, excluded, param_vals,
 # ── Timeseries figure (depth vs time with span highlight)
 @app.callback(
     Output("timeseries-plot", "figure"),
-    Input("store-current-index",   "data"),
-    Input("span-slider",           "value"),
+    Input("store-span-range",      "data"),
+    State("store-current-index",   "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
+    prevent_initial_call=True,
 )
-def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
+def update_timeseries(span_range, current_idx, rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
         height=250, margin=dict(l=50, r=10, t=30, b=40),
@@ -1295,8 +1295,8 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
         data       = station_matches[keys[current_idx]]
         df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
         df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
-        span_start = int(slider_value[0]) if slider_value else None
-        span_end   = int(slider_value[1]) if slider_value else None
+        span_start = int(span_range[0]) if span_range else None
+        span_end   = int(span_range[1]) if span_range else None
         return build_timeseries_figure(df_profile, span_start, span_end)
     except Exception:
         return empty
@@ -1370,14 +1370,15 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 # ── Profile figure (4 panels)
 @app.callback(
     Output("profile-plot", "figure"),
-    Input("store-current-index",   "data"),
-    Input("store-excluded",        "data"),
     Input("store-npc",             "data"),
-    Input("store-span-range",      "data"),
+    State("store-current-index",   "data"),
+    State("store-excluded",        "data"),
+    State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
+    prevent_initial_call=True,
 )
-def update_profile(current_idx, excluded, npc_json, span_range,
+def update_profile(npc_json, current_idx, excluded, span_range,
                    rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
