@@ -1106,6 +1106,7 @@ def navigate(n_prev, n_next, n_clear, select_clicks,
     prevent_initial_call=True,
 )
 def collect_exclusions(selected_data, excluded, current_idx, station_matches):
+    print(f"[collect_exclusions] selected_pts={len(selected_data.get('points',[])) if selected_data else 'none'} existing={excluded}", flush=True)
     if not selected_data or not selected_data.get("points"):
         return no_update
     new_excl = set(excluded or [])
@@ -1113,6 +1114,7 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
         cd = pt.get("customdata")
         if cd is not None:
             new_excl.add(int(cd))
+    print(f"[collect_exclusions] → new excluded={sorted(new_excl)}", flush=True)
     return list(new_excl)
 
 
@@ -1166,6 +1168,7 @@ def init_slider(current_idx, rsk_df_json, station_matches):
     prevent_initial_call=True,
 )
 def update_span_from_slider(slider_value):
+    print(f"[update_span_from_slider] slider_value={slider_value}", flush=True)
     if slider_value is None:
         return no_update
     return slider_value
@@ -1238,6 +1241,7 @@ def compute_npc(span_range, excluded, param_vals,
                 current_idx, station_matches, rsk_df_json, rsk_meta,
                 cruise_times,
                 cruise_number, vessel_name, mission_number, platform):
+    print(f"[compute_npc] span_range={span_range} excluded={excluded} has_data={bool(station_matches)}", flush=True)
     if not station_matches or not rsk_df_json or not span_range:
         return {}, {}, [], ""
 
@@ -1270,6 +1274,7 @@ def compute_npc(span_range, excluded, param_vals,
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
     meta_json = json.dumps(meta)
+    print(f"[compute_npc] done → npc_rows={len(df_npc)}", flush=True)
     return npc_json, meta_json, new_span, ""
 
 
@@ -1383,6 +1388,7 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 )
 def update_profile(current_idx, excluded, npc_json, span_range,
                    rsk_df_json, station_matches):
+    print(f"[update_profile] idx={current_idx} excl={excluded} span={span_range} npc={'<data>' if npc_json and npc_json != '{}' else 'empty'}", flush=True)
     empty = go.Figure()
     empty.update_layout(
         margin=dict(l=40, r=20, t=50, b=40),
