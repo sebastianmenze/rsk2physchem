@@ -1371,14 +1371,14 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 @app.callback(
     Output("profile-plot", "figure"),
     Input("store-npc",             "data"),
-    Input("store-excluded",        "data"),
     State("store-current-index",   "data"),
+    State("store-excluded",        "data"),
     State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
     prevent_initial_call=True,
 )
-def update_profile(npc_json, excluded, current_idx, span_range,
+def update_profile(npc_json, current_idx, excluded, span_range,
                    rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
