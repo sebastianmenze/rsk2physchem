@@ -1272,24 +1272,24 @@ def compute_npc(span_range, excluded, param_vals,
 
 
 # ── Timeseries figure (depth vs time with span highlight)
+# store-current-index is a State (not Input): by the time span-slider.value
+# fires (set by init_slider after navigation), store-current-index is already
+# at the new station, so we always read a consistent pair of (idx, slider).
 @app.callback(
     Output("timeseries-plot", "figure"),
-    Input("store-current-index",   "data"),
     Input("span-slider",           "value"),
+    State("store-current-index",   "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
 )
-def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
+def update_timeseries(slider_value, current_idx, rsk_df_json, station_matches):
     empty = go.Figure()
     empty.update_layout(
         height=250, margin=dict(l=50, r=10, t=30, b=40),
         xaxis=dict(visible=False), yaxis=dict(visible=False),
         annotations=[dict(text="No data", showarrow=False)],
     )
-    print(f"[update_timeseries] idx={current_idx} slider={slider_value} "
-          f"has_matches={bool(station_matches)} has_df={bool(rsk_df_json)}", flush=True)
     if not station_matches or not rsk_df_json:
-        print(f"[update_timeseries] early-exit", flush=True)
         return empty
 
     try:
@@ -1300,9 +1300,7 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
         span_start = int(slider_value[0]) if slider_value else None
         span_end   = int(slider_value[1]) if slider_value else None
         return build_timeseries_figure(df_profile, span_start, span_end)
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        print(f"[update_timeseries ERROR] idx={current_idx} slider={slider_value} {e}", flush=True)
+    except Exception:
         return empty
 
 
