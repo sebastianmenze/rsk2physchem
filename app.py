@@ -1275,8 +1275,12 @@ def compute_npc(span_range, excluded, param_vals,
         print(f"[compute_npc] ERROR station={current_idx} span={span_range}: {exc}", flush=True)
         return "{}", _meta_sentinel(current_idx), [], ""
 
-    npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
-    meta_json = json.dumps({**meta, "_station_idx": current_idx, "_ts": str(uuid.uuid1())})
+    npc_json = df_npc.to_json(orient="split") if len(df_npc) else "{}"
+    try:
+        meta_json = json.dumps({**meta, "_station_idx": current_idx, "_ts": str(uuid.uuid1())})
+    except (TypeError, ValueError) as exc:
+        print(f"[compute_npc] meta serialisation error (station={current_idx}): {exc}", flush=True)
+        meta_json = _meta_sentinel(current_idx)
     return npc_json, meta_json, new_span, ""
 
 
@@ -1306,7 +1310,10 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
         span_start = int(slider_value[0]) if slider_value else None
         span_end   = int(slider_value[1]) if slider_value else None
         return build_timeseries_figure(df_profile, span_start, span_end)
-    except Exception:
+    except Exception as exc:
+        import traceback
+        print(f"[timeseries] ERROR station={current_idx} slider={slider_value}: {exc}", flush=True)
+        traceback.print_exc()
         return empty
 
 
@@ -1416,10 +1423,14 @@ def update_profile_with_npc(npc_meta_json, npc_json, current_idx, excluded,
     # Validate that this NPC result belongs to the station currently on screen.
     try:
         meta = json.loads(npc_meta_json) if isinstance(npc_meta_json, str) else (npc_meta_json or {})
-        if meta.get("_station_idx") != current_idx:
+        station_in_meta = meta.get("_station_idx")
+        if station_in_meta != current_idx:
+            print(f"[profile_npc] stale skip: meta_idx={station_in_meta} current={current_idx}", flush=True)
             return no_update   # stale result from a previous station — skip
-    except Exception:
+    except Exception as exc:
+        print(f"[profile_npc] meta parse error: {exc!r}", flush=True)
         return no_update
+    print(f"[profile_npc] rendering station={current_idx} span={span_range}", flush=True)
     return _render_profile(station_matches, excluded, npc_json,
                            current_idx, span_range, rsk_df_json)
 
@@ -1461,7 +1472,10 @@ def _render_profile(station_matches, excluded, npc_json,
         )
         fig.update_layout(title_text=key)
         return fig
-    except Exception:
+    except Exception as exc:
+        import traceback
+        print(f"[_render_profile] ERROR station={current_idx} span={span_range}: {exc}", flush=True)
+        traceback.print_exc()
         return empty
 
 
