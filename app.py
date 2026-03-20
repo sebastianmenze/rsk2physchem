@@ -467,13 +467,13 @@ def npc_write(meta, df, filename):
 
 
 def _npc_filename(cruise_number, start_time):
-    """Return  cruisenumber_YYYYMMDD.npc  (fallback: unknown_unknown.npc)."""
-    cn   = (cruise_number or "unknown").strip().replace(" ", "_")
+    """Return  cruisenumber_YYYYMMDD_HHMMSS.npc  (fallback: unknown_unknown.npc)."""
+    cn = (cruise_number or "unknown").strip().replace(" ", "_")
     try:
-        date = pd.Timestamp(start_time).strftime("%Y%m%d")
+        dt = pd.Timestamp(start_time).strftime("%Y%m%d_%H%M%S")
     except Exception:
-        date = "unknown"
-    return f"{cn}_{date}.npc"
+        dt = "unknown"
+    return f"{cn}_{dt}.npc"
 
 
 def npc_to_string(meta, df):
