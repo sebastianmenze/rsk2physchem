@@ -1331,7 +1331,9 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
     Input("store-station-matches", "data"),
     Input("store-current-index",   "data"),
     Input("store-excluded",        "data"),
-    Input("store-npc",             "data"),
+    State("store-npc",             "data"),   # State — NPC count shown, but NPC changes
+                                              # must NOT re-render map markers (would
+                                              # ghost-fire the navigate callback)
 )
 def update_display(station_matches, current_idx, excluded, npc_json):
     if not station_matches:
@@ -1380,6 +1382,29 @@ def update_display(station_matches, current_idx, excluded, npc_json):
         current_idx <= 0, current_idx >= n - 1,
         excl_count, status_msg,
     )
+
+
+# ── Status bar NPC-count update (store-npc as Input here, NOT in update_display,
+# so the map markers are never re-built when the NPC changes — which would
+# ghost-fire the pattern-matching navigate callback and reset to station 0).
+@app.callback(
+    Output("status-bar", "children", allow_duplicate=True),
+    Input("store-npc",             "data"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+    prevent_initial_call=True,
+)
+def update_status_npc(npc_json, current_idx, station_matches):
+    if not station_matches:
+        return no_update
+    n = len(station_matches)
+    df_npc_len = 0
+    if npc_json and npc_json != "{}":
+        try:
+            df_npc_len = len(pd.read_json(StringIO(npc_json), orient="split"))
+        except Exception:
+            pass
+    return f"Station {current_idx+1}/{n} · {df_npc_len} depth bins computed"
 
 
 # ── Profile figure — part 1: immediate render on upload or lasso
