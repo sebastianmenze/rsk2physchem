@@ -565,6 +565,21 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
                 mode="lines", line=dict(color="red", width=2), showlegend=False,
             ), row=1, col=col_i)
 
+        # Fix axis ranges to span (Viridis) data so gray context dots don't
+        # push the view out; a small 5 % margin keeps edge points visible.
+        span_src = keep_span + [i for i in excl_list if i in span_set]
+        if span_src and has_col:
+            x_vals = df_profile.loc[span_src, col_name].dropna()
+            y_vals = -df_profile.loc[span_src, "depth"]
+            if len(x_vals):
+                xpad = (x_vals.max() - x_vals.min()) * 0.05 or 0.5
+                ypad = (y_vals.max() - y_vals.min()) * 0.05 or 0.5
+                fig.update_xaxes(range=[x_vals.min() - xpad, x_vals.max() + xpad],
+                                 title_text=xlabel, row=1, col=col_i)
+                fig.update_yaxes(range=[y_vals.min() - ypad, y_vals.max() + ypad],
+                                 row=1, col=col_i)
+                continue
+
         fig.update_xaxes(title_text=xlabel, row=1, col=col_i)
 
     fig.update_yaxes(title_text="Depth (m)", row=1, col=1)
