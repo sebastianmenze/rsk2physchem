@@ -1092,6 +1092,13 @@ def navigate(n_prev, n_next, n_clear, select_clicks,
     if triggered == "btn-clear-excl":
         return current_idx, []
     if isinstance(triggered, dict) and triggered.get("type") == "select-profile-btn":
+        # Guard against ghost fires: when update_display rebuilds map-markers,
+        # Dash re-mounts the select-profile-btn components and fires this
+        # callback with n_clicks=None (not a real click).  Only act when the
+        # triggering button has an actual positive click count.
+        triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
+        if not triggered_value:
+            return no_update, no_update
         return triggered["index"], []
     return current_idx, excluded
 
