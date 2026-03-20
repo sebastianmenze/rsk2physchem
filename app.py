@@ -553,7 +553,7 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
     fig.update_yaxes(title_text="Depth (m)", row=1, col=1)
     fig.update_layout(
         margin=dict(l=40, r=20, t=50, b=40),
-        dragmode="select",
+        dragmode="zoom",
         autosize=True,
     )
     return fig
@@ -596,7 +596,7 @@ def build_timeseries_figure(df_profile, span_start, span_end):
     fig.update_layout(
         height=250,
         margin=dict(l=50, r=10, t=30, b=40),
-        dragmode="select",
+        dragmode="zoom",
         selectdirection="h",
         xaxis_title="Time (UTC)",
         yaxis_title="Depth (m)",
