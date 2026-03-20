@@ -1106,7 +1106,6 @@ def navigate(n_prev, n_next, n_clear, select_clicks,
     prevent_initial_call=True,
 )
 def collect_exclusions(selected_data, excluded, current_idx, station_matches):
-    print(f"[collect_exclusions] selected_pts={len(selected_data.get('points',[])) if selected_data else 'none'} existing={excluded}", flush=True)
     if not selected_data or not selected_data.get("points"):
         return no_update
     new_excl = set(excluded or [])
@@ -1114,7 +1113,6 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
         cd = pt.get("customdata")
         if cd is not None:
             new_excl.add(int(cd))
-    print(f"[collect_exclusions] → new excluded={sorted(new_excl)}", flush=True)
     return list(new_excl)
 
 
@@ -1166,7 +1164,6 @@ def init_slider(current_idx, rsk_df_json, station_matches):
     prevent_initial_call=True,
 )
 def update_span_from_slider(slider_value):
-    print(f"[update_span_from_slider] slider_value={slider_value}", flush=True)
     if slider_value is None:
         return no_update
     return slider_value
@@ -1239,9 +1236,13 @@ def compute_npc(span_range, excluded, param_vals,
                 current_idx, station_matches, rsk_df_json, rsk_meta,
                 cruise_times,
                 cruise_number, vessel_name, mission_number, platform):
-    print(f"[compute_npc] span_range={span_range} excluded={excluded} has_data={bool(station_matches)}", flush=True)
+    # Always include station index + unique timestamp in meta so update_profile
+    # can detect and discard stale results from a previous station.
+    def _meta_sentinel(idx):
+        return json.dumps({"_station_idx": idx, "_ts": str(uuid.uuid1())})
+
     if not station_matches or not rsk_df_json or not span_range:
-        return {}, {}, [], ""
+        return "{}", _meta_sentinel(current_idx), [], ""
 
     span_start, span_end = span_range
     keys        = list(station_matches.keys())
@@ -1254,7 +1255,7 @@ def compute_npc(span_range, excluded, param_vals,
 
     new_span = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
     if not new_span:
-        return {}, {}, [], ""
+        return "{}", _meta_sentinel(current_idx), [], ""
 
     ct_start = cruise_times.get("start") if cruise_times else None
     ct_end   = cruise_times.get("end")   if cruise_times else None
@@ -1271,12 +1272,11 @@ def compute_npc(span_range, excluded, param_vals,
             data["station_info"],
         )
     except Exception as exc:
-        print(f"[compute_npc] ERROR: {exc}", flush=True)
-        return {}, {}, [], ""
+        print(f"[compute_npc] ERROR station={current_idx} span={span_range}: {exc}", flush=True)
+        return "{}", _meta_sentinel(current_idx), [], ""
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
-    meta_json = json.dumps(meta)
-    print(f"[compute_npc] done → npc_rows={len(df_npc)}", flush=True)
+    meta_json = json.dumps({**meta, "_station_idx": current_idx, "_ts": str(uuid.uuid1())})
     return npc_json, meta_json, new_span, ""
 
 
@@ -1375,26 +1375,58 @@ def update_display(station_matches, current_idx, excluded, npc_json):
     )
 
 
-# ── Profile figure (4 panels)
-# Inputs that trigger a render:
-#   store-station-matches → fires immediately on upload (shows raw data)
-#   store-excluded        → fires immediately on lasso (shows Xs, old NPC)
-#   store-npc             → fires after compute_npc finishes (correct NPC)
-# store-current-index is State so navigation never causes a premature render
-# with the previous station's NPC; the profile only updates when store-npc
-# actually changes (i.e. after compute_npc has run for the new station).
+# ── Profile figure — part 1: immediate render on upload or lasso
+# Fires from store-station-matches (upload) and store-excluded (lasso) so the
+# user sees raw data / excluded-point markers without waiting for compute_npc.
+# Uses whatever NPC is currently in store-npc (may be stale between stations;
+# part 2 will overwrite with the validated fresh NPC once it is ready).
 @app.callback(
     Output("profile-plot", "figure"),
     Input("store-station-matches", "data"),
     Input("store-excluded",        "data"),
-    Input("store-npc",             "data"),
     State("store-current-index",   "data"),
     State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
+    State("store-npc",             "data"),
 )
-def update_profile(station_matches, excluded, npc_json, current_idx, span_range,
-                   rsk_df_json):
-    print(f"[update_profile] idx={current_idx} excl={excluded} span={span_range} npc={'<data>' if npc_json and npc_json != '{}' else 'empty'}", flush=True)
+def update_profile_immediate(station_matches, excluded,
+                             current_idx, span_range, rsk_df_json, npc_json):
+    return _render_profile(station_matches, excluded, npc_json,
+                           current_idx, span_range, rsk_df_json)
+
+
+# ── Profile figure — part 2: render with validated fresh NPC
+# Fires from store-npc-meta (always has a new UUID after each compute_npc run).
+# Checks _station_idx in the meta: if it doesn't match the currently displayed
+# station the result is stale (a queued callback from a previous station) and
+# we skip the render entirely to avoid overwriting with wrong data.
+@app.callback(
+    Output("profile-plot", "figure", allow_duplicate=True),
+    Input("store-npc-meta",        "data"),
+    State("store-npc",             "data"),
+    State("store-current-index",   "data"),
+    State("store-excluded",        "data"),
+    State("store-span-range",      "data"),
+    State("store-rsk-df",          "data"),
+    State("store-station-matches", "data"),
+    prevent_initial_call=True,
+)
+def update_profile_with_npc(npc_meta_json, npc_json, current_idx, excluded,
+                             span_range, rsk_df_json, station_matches):
+    # Validate that this NPC result belongs to the station currently on screen.
+    try:
+        meta = json.loads(npc_meta_json) if isinstance(npc_meta_json, str) else (npc_meta_json or {})
+        if meta.get("_station_idx") != current_idx:
+            return no_update   # stale result from a previous station — skip
+    except Exception:
+        return no_update
+    return _render_profile(station_matches, excluded, npc_json,
+                           current_idx, span_range, rsk_df_json)
+
+
+def _render_profile(station_matches, excluded, npc_json,
+                    current_idx, span_range, rsk_df_json):
+    """Shared rendering logic for both profile callbacks."""
     empty = go.Figure()
     empty.update_layout(
         margin=dict(l=40, r=20, t=50, b=40),
@@ -1414,9 +1446,10 @@ def update_profile(station_matches, excluded, npc_json, current_idx, span_range,
         df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
 
         df_npc = pd.DataFrame()
-        if npc_json and npc_json != "{}":
+        npc_str = npc_json if isinstance(npc_json, str) else None
+        if npc_str and npc_str != "{}":
             try:
-                df_npc = pd.read_json(StringIO(npc_json), orient="split")
+                df_npc = pd.read_json(StringIO(npc_str), orient="split")
             except Exception:
                 pass
 
