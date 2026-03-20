@@ -494,8 +494,15 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
     )
 
     excl      = set(i for i in (excluded_indices or []) if i in df_profile.index)
-    keep      = [i for i in df_profile.index if i not in excl]
-    excl_list = list(excl)
+    span_set  = set(range(int(span_start), int(span_end) + 1))
+
+    # Span points: go into NPC averaging — must be selectable so lasso
+    # exclusions are guaranteed to affect the bin calculation.
+    keep_span    = [i for i in df_profile.index if i in span_set  and i not in excl]
+    # Context points: outside the span — shown for reference, no customdata so
+    # lasso selections on these rows are silently ignored by collect_exclusions.
+    keep_context = [i for i in df_profile.index if i not in span_set and i not in excl]
+    excl_list    = list(excl)
 
     vars_cfg = [
         ("temperature",                  "°C",      "TEMP.value",      "T=%{x:.3f}°C d=%{y:.1f}m"),
@@ -520,15 +527,25 @@ def build_profile_figure(df_profile, span_start, span_end, df_npc, excluded_indi
                 )
             continue
 
-        # All non-excluded points in Viridis
-        if keep:
+        # Context points (outside span): gray, not selectable
+        if keep_context:
+            fig.add_trace(go.Scatter(
+                x=df_profile.loc[keep_context, col_name].tolist(),
+                y=(-df_profile.loc[keep_context, "depth"]).tolist(),
+                mode="markers",
+                marker=dict(size=3, color="lightgray"),
+                showlegend=False, hoverinfo="skip",
+            ), row=1, col=col_i)
+
+        # Span points (used in NPC): Viridis, selectable via customdata
+        if keep_span:
             kw = dict(hovertemplate=f"{htmpl}<extra></extra>") if htmpl else {}
             fig.add_trace(go.Scatter(
-                x=df_profile.loc[keep, col_name].tolist(),
-                y=(-df_profile.loc[keep, "depth"]).tolist(),
+                x=df_profile.loc[keep_span, col_name].tolist(),
+                y=(-df_profile.loc[keep_span, "depth"]).tolist(),
                 mode="markers",
-                marker=dict(size=4, color=keep, colorscale="Viridis"),
-                showlegend=False, customdata=keep,
+                marker=dict(size=4, color=keep_span, colorscale="Viridis"),
+                showlegend=False, customdata=keep_span,
                 **kw,
             ), row=1, col=col_i)
 
