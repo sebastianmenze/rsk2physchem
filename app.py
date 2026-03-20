@@ -466,6 +466,16 @@ def npc_write(meta, df, filename):
         f.write(df.to_csv(sep="\t", index=False, lineterminator="\n"))
 
 
+def _npc_filename(cruise_number, start_time):
+    """Return  cruisenumber_YYYYMMDD.npc  (fallback: unknown_unknown.npc)."""
+    cn   = (cruise_number or "unknown").strip().replace(" ", "_")
+    try:
+        date = pd.Timestamp(start_time).strftime("%Y%m%d")
+    except Exception:
+        date = "unknown"
+    return f"{cn}_{date}.npc"
+
+
 def npc_to_string(meta, df):
     buf = StringIO()
     buf.write("# Metadata:\n")
@@ -1589,7 +1599,7 @@ def download_npc(n_clicks, span_range, excluded, param_vals,
             current_idx + 1, rsk_meta or {},
             data["station_info"],
         )
-        fname   = f"{key}_binned.npc"
+        fname   = _npc_filename(cruise_number, ct_start)
         content = npc_to_string(meta, df_npc)
         return (dict(content=content, filename=fname, type="text/plain"),
                 f"Downloaded {fname}")
@@ -1688,7 +1698,9 @@ def upload_to_s3(n_clicks, span_range, excluded, param_vals,
             tmp_path = f.name
         npc_write(meta, df_npc, tmp_path)
 
-        dest = f"{S3_DEST_PREFIX.rstrip('/')}/{os.path.basename(tmp_path)}"
+        ct_start_s3 = cruise_times.get("start") if cruise_times else None
+        fname_s3    = _npc_filename(cruise_number, ct_start_s3)
+        dest = f"{S3_DEST_PREFIX.rstrip('/')}/{fname_s3}"
         with open(tmp_path, "rb") as fh:
             s3.Bucket(S3_BUCKET).put_object(Key=dest, Body=fh)
         os.unlink(tmp_path)
