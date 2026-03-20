@@ -1118,14 +1118,12 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     return list(new_excl)
 
 
-# ── Initialise slider when station changes (also sets store-span-range directly
-# so compute_npc fires in the same round-trip as the slider update)
+# ── Initialise slider when station changes
 @app.callback(
     Output("span-slider",       "min"),
     Output("span-slider",       "max"),
     Output("span-slider",       "marks"),
     Output("span-slider",       "value"),
-    Output("store-span-range",  "data"),
     Input("store-current-index",   "data"),
     State("store-rsk-df",          "data"),
     State("store-station-matches", "data"),
@@ -1133,7 +1131,7 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
 )
 def init_slider(current_idx, rsk_df_json, station_matches):
     if not station_matches or not rsk_df_json:
-        return 0, 100, {}, [0, 100], [0, 100]
+        return 0, 100, {}, [0, 100]
 
     keys       = list(station_matches.keys())
     data       = station_matches[keys[current_idx]]
@@ -1141,7 +1139,7 @@ def init_slider(current_idx, rsk_df_json, station_matches):
     df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
     N          = len(df_profile)
     if N == 0:
-        return 0, 0, {}, [0, 0], [0, 0]
+        return 0, 0, {}, [0, 0]
 
     ix_down = detect_downcast(df_profile)
     if ix_down.any():
@@ -1158,7 +1156,7 @@ def init_slider(current_idx, rsk_df_json, station_matches):
         t   = pd.Timestamp(ts.iloc[idx])
         marks[idx] = {"label": t.strftime("%H:%M"), "style": {"fontSize": "10px"}}
 
-    return 0, N - 1, marks, [span_start, span_end], [span_start, span_end]
+    return 0, N - 1, marks, [span_start, span_end]
 
 
 # ── Slider interaction → update span range store
@@ -1261,16 +1259,20 @@ def compute_npc(span_range, excluded, param_vals,
     ct_start = cruise_times.get("start") if cruise_times else None
     ct_end   = cruise_times.get("end")   if cruise_times else None
 
-    df_npc, meta = calculate_df_npc(
-        df_profile, new_span, set(excluded or []),
-        "o2" in (param_vals or []),
-        "chl" in (param_vals or []),
-        ct_start, ct_end,
-        cruise_number or "", vessel_name or "",
-        mission_number or "", platform or "",
-        current_idx + 1, rsk_meta or {},
-        data["station_info"],
-    )
+    try:
+        df_npc, meta = calculate_df_npc(
+            df_profile, new_span, set(excluded or []),
+            "o2" in (param_vals or []),
+            "chl" in (param_vals or []),
+            ct_start, ct_end,
+            cruise_number or "", vessel_name or "",
+            mission_number or "", platform or "",
+            current_idx + 1, rsk_meta or {},
+            data["station_info"],
+        )
+    except Exception as exc:
+        print(f"[compute_npc] ERROR: {exc}", flush=True)
+        return {}, {}, [], ""
 
     npc_json  = df_npc.to_json(orient="split") if len(df_npc) else "{}"
     meta_json = json.dumps(meta)
@@ -1374,20 +1376,24 @@ def update_display(station_matches, current_idx, excluded, npc_json):
 
 
 # ── Profile figure (4 panels)
-# store-span-range is a State (not Input) so the callback never fires
-# prematurely when only the span changes — it waits for compute_npc to finish
-# and update store-npc, keeping all three values in sync.
+# Inputs that trigger a render:
+#   store-station-matches → fires immediately on upload (shows raw data)
+#   store-excluded        → fires immediately on lasso (shows Xs, old NPC)
+#   store-npc             → fires after compute_npc finishes (correct NPC)
+# store-current-index is State so navigation never causes a premature render
+# with the previous station's NPC; the profile only updates when store-npc
+# actually changes (i.e. after compute_npc has run for the new station).
 @app.callback(
     Output("profile-plot", "figure"),
-    Input("store-current-index",   "data"),
+    Input("store-station-matches", "data"),
     Input("store-excluded",        "data"),
     Input("store-npc",             "data"),
+    State("store-current-index",   "data"),
     State("store-span-range",      "data"),
     State("store-rsk-df",          "data"),
-    State("store-station-matches", "data"),
 )
-def update_profile(current_idx, excluded, npc_json, span_range,
-                   rsk_df_json, station_matches):
+def update_profile(station_matches, excluded, npc_json, current_idx, span_range,
+                   rsk_df_json):
     print(f"[update_profile] idx={current_idx} excl={excluded} span={span_range} npc={'<data>' if npc_json and npc_json != '{}' else 'empty'}", flush=True)
     empty = go.Figure()
     empty.update_layout(
