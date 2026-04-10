@@ -354,7 +354,7 @@ def calculate_df_npc(df_profile, selected_indices, excluded_indices,
     units         = ["ISO8601 UTC", "mS/cm", "degC", "dbar", "PSU"]
     sup_units     = ["ISO8601 UTC", "mS/cm", "degC", "dbar", "PSU"]
     acq           = ["1019900"] * 5
-    proc          = ["L0"] * 5
+    proc          = ["L1"] * 5
 
     if include_o2 and "dissolved_o2_concentration" in df_profile.columns:
         if df_profile["dissolved_o2_concentration"].dropna().any():
@@ -398,12 +398,12 @@ def calculate_df_npc(df_profile, selected_indices, excluded_indices,
         "operation.operationNumber":   current_op_number,
         "operation.timeStart":         pd.Timestamp(df_profile["timestamp"].min()).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "operation.timeEnd":           pd.Timestamp(df_profile["timestamp"].max()).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "operation.timeStartQuality":  0,
-        "operation.timeEndQuality":    0,
+        "operation.timeStartQuality":  1,
+        "operation.timeEndQuality":    1,
         "operation.featureType":       4,
         "operation.latitudeStart":     station_info["startLat"],
         "operation.longitudeStart":    station_info["startLon"],
-        "operation.positionStartQuality": 0,
+        "operation.positionStartQuality": 1,
         "operation.stationType":       1000,
         "operation.localCdiId":        str(uuid.uuid1()),
         "operation.operationComment":  station_info["comment"],
@@ -433,7 +433,7 @@ def calculate_df_npc(df_profile, selected_indices, excluded_indices,
     meta[f"parameter{{{n+1}}}.parameterName"]         = "Depth below sea level"
     meta[f"parameter{{{n+1}}}.suppliedParameterName"] = "Sea Pressure"
     meta[f"parameter{{{n+1}}}.acquirementMethod"]     = "1019900"
-    meta[f"parameter{{{n+1}}}.processingLevel"]       = "L0"
+    meta[f"parameter{{{n+1}}}.processingLevel"]       = "L1"
 
     # Bin the data
     rows = []
