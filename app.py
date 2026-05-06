@@ -831,6 +831,9 @@ left_panel = dbc.Card([
                  style={"fontSize": "11px", "maxHeight": "130px",
                         "overflowY": "auto", "background": "#f8f9fa",
                         "padding": "6px", "borderRadius": "4px"}),
+        dbc.Label("Comment", className="small mt-1"),
+        dbc.Input(id="input-comment", type="text", size="sm",
+                  placeholder="no comment", className="mb-1"),
 
         html.Hr(),
 
@@ -1378,6 +1381,7 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
     Output("btn-next",          "disabled"),
     Output("excl-count-label",  "children"),
     Output("status-bar",        "children"),
+    Output("input-comment",     "value"),
     Input("store-station-matches", "data"),
     Input("store-current-index",   "data"),
     Input("store-excluded",        "data"),
@@ -1387,7 +1391,7 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
 )
 def update_display(station_matches, current_idx, excluded, npc_json):
     if not station_matches:
-        return ([60, 5], 5, [], "No data loaded", "─", True, True, "", "")
+        return ([60, 5], 5, [], "No data loaded", "─", True, True, "", "", "")
 
     keys  = list(station_matches.keys())
     n     = len(keys)
@@ -1417,7 +1421,6 @@ def update_display(station_matches, current_idx, excluded, npc_json):
         f"End:      {si['endTime']}\n"
         f"Lat:      {si['startLat']:.5f}°N\n"
         f"Lon:      {si['startLon']:.5f}°E\n"
-        f"Comment:  {si['comment']}\n"
         f"Points:   {data['n_datapoints']}"
         + corr_note
     )
@@ -1431,6 +1434,7 @@ def update_display(station_matches, current_idx, excluded, npc_json):
         info, nav_label,
         current_idx <= 0, current_idx >= n - 1,
         excl_count, status_msg,
+        si.get("comment", ""),
     )
 
 
@@ -1571,11 +1575,13 @@ def _render_profile(station_matches, excluded, npc_json,
     State("input-vessel-name",     "value"),
     State("input-mission-number",  "value"),
     State("input-platform",        "value"),
+    State("input-comment",         "value"),
     prevent_initial_call=True,
 )
 def download_npc(n_clicks, span_range, excluded, param_vals,
                  current_idx, station_matches, rsk_df_json, rsk_meta,
-                 cruise_times, cruise_number, vessel_name, mission_number, platform):
+                 cruise_times, cruise_number, vessel_name, mission_number, platform,
+                 comment):
     if not station_matches or not rsk_df_json or not span_range:
         return no_update, "No NPC data available – select a span first."
     try:
@@ -1590,6 +1596,7 @@ def download_npc(n_clicks, span_range, excluded, param_vals,
             return no_update, "No NPC data available – select a span first."
         ct_start = cruise_times.get("start") if cruise_times else None
         ct_end   = cruise_times.get("end")   if cruise_times else None
+        station_info = {**data["station_info"], "comment": comment or ""}
         df_npc, meta = calculate_df_npc(
             df_profile, new_span, set(excluded or []),
             "o2" in (param_vals or []),
@@ -1598,7 +1605,7 @@ def download_npc(n_clicks, span_range, excluded, param_vals,
             cruise_number or "", vessel_name or "",
             mission_number or "", platform or "",
             current_idx + 1, rsk_meta or {},
-            data["station_info"],
+            station_info,
         )
         fname   = _npc_filename(cruise_number, meta.get("operation.timeStart"))
         content = npc_to_string(meta, df_npc)
@@ -1654,11 +1661,13 @@ def check_physchem_on_profile_change(npc_json, meta_json,
     State("input-vessel-name",     "value"),
     State("input-mission-number",  "value"),
     State("input-platform",        "value"),
+    State("input-comment",         "value"),
     prevent_initial_call=True,
 )
 def upload_to_s3(n_clicks, span_range, excluded, param_vals,
                  current_idx, station_matches, rsk_df_json, rsk_meta,
-                 cruise_times, cruise_number, vessel_name, mission_number, platform):
+                 cruise_times, cruise_number, vessel_name, mission_number, platform,
+                 comment):
     if not BOTO3_AVAILABLE:
         return "boto3 not installed – cannot upload."
     if not station_matches or not rsk_df_json or not span_range:
@@ -1674,6 +1683,7 @@ def upload_to_s3(n_clicks, span_range, excluded, param_vals,
             return "No NPC data available – select a span first."
         ct_start = cruise_times.get("start") if cruise_times else None
         ct_end   = cruise_times.get("end")   if cruise_times else None
+        station_info = {**data["station_info"], "comment": comment or ""}
         df_npc, meta = calculate_df_npc(
             df_profile, new_span, set(excluded or []),
             "o2" in (param_vals or []),
@@ -1682,7 +1692,7 @@ def upload_to_s3(n_clicks, span_range, excluded, param_vals,
             cruise_number or "", vessel_name or "",
             mission_number or "", platform or "",
             current_idx + 1, rsk_meta or {},
-            data["station_info"],
+            station_info,
         )
 
         os.environ["AWS_REQUEST_CHECKSUM_CALCULATION"]  = "when_required"
