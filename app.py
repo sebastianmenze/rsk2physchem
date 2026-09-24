@@ -821,6 +821,13 @@ left_panel = dbc.Card([
             dbc.Button("Next →", id="btn-next", color="secondary",
                        size="sm", disabled=True),
         ], className="w-100 mb-2"),
+        dbc.InputGroup([
+            dbc.InputGroupText("Go to #"),
+            dbc.Input(id="input-jump-profile", type="number", min=1, step=1,
+                      size="sm", debounce=True, disabled=True),
+            dbc.Button("Go", id="btn-jump-profile", color="secondary",
+                       size="sm", disabled=True),
+        ], className="mb-2 input-group-sm"),
 
         html.Hr(),
 
@@ -1079,12 +1086,18 @@ def process_uploaded_files(contents_list, filenames):
         else:
             station_matches = {}
 
+        # Only keep stations that actually contain RSK data points
+        n_empty = sum(1 for v in station_matches.values() if v["n_datapoints"] == 0)
+        station_matches = {k: v for k, v in station_matches.items()
+                           if v["n_datapoints"] > 0}
+
         n_files    = len(tmp_paths)
         n_stations = len(station_matches)
         status_msg = (
             f"Loaded {n_files} file(s) · "
             f"{len(df_all):,} data points · "
             f"{n_stations} CTD stations matched"
+            + (f" ({n_empty} without data skipped)" if n_empty else "")
         )
 
         # Serialise RSK data
@@ -1117,16 +1130,26 @@ def process_uploaded_files(contents_list, filenames):
     Input("btn-next",  "n_clicks"),
     Input("btn-clear-excl", "n_clicks"),
     Input({"type": "select-profile-btn", "index": ALL}, "n_clicks"),
+    Input("btn-jump-profile",   "n_clicks"),
+    Input("input-jump-profile", "n_submit"),
+    State("input-jump-profile", "value"),
     State("store-current-index",  "data"),
     State("store-station-matches","data"),
     State("store-excluded",       "data"),
     prevent_initial_call=True,
 )
-def navigate(n_prev, n_next, n_clear, select_clicks,
-             current_idx, station_matches, excluded):
+def navigate(n_prev, n_next, n_clear, select_clicks, n_jump, n_jump_submit,
+             jump_value, current_idx, station_matches, excluded):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
     n = len(keys)
+    if triggered in ("btn-jump-profile", "input-jump-profile"):
+        if not n or jump_value is None:
+            return no_update, no_update
+        target = min(max(int(jump_value), 1), n) - 1
+        if target == current_idx:
+            return no_update, no_update
+        return target, []
     if triggered == "btn-prev":
         return max(0, current_idx - 1), []
     if triggered == "btn-next":
@@ -1377,6 +1400,10 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
     Output("btn-next",          "disabled"),
     Output("excl-count-label",  "children"),
     Output("status-bar",        "children"),
+    Output("input-jump-profile", "max"),
+    Output("input-jump-profile", "placeholder"),
+    Output("input-jump-profile", "disabled"),
+    Output("btn-jump-profile",   "disabled"),
     Input("store-station-matches", "data"),
     Input("store-current-index",   "data"),
     Input("store-excluded",        "data"),
@@ -1386,10 +1413,12 @@ def update_timeseries(current_idx, slider_value, rsk_df_json, station_matches):
 )
 def update_display(station_matches, current_idx, excluded, npc_json):
     if not station_matches:
-        return ([60, 5], 5, [], "No data loaded", "─", True, True, "", "")
+        return ([60, 5], 5, [], "No data loaded", "─", True, True, "", "",
+                None, "", True, True)
 
     keys  = list(station_matches.keys())
     n     = len(keys)
+    current_idx = min(max(current_idx or 0, 0), n - 1)
     key   = keys[current_idx]
     data  = station_matches[key]
     si    = data["station_info"]
@@ -1430,6 +1459,7 @@ def update_display(station_matches, current_idx, excluded, npc_json):
         info, nav_label,
         current_idx <= 0, current_idx >= n - 1,
         excl_count, status_msg,
+        n, f"1–{n}", False, False,
     )
 
 
