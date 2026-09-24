@@ -147,7 +147,8 @@ def get_mission_number_from_physchem(cruise_number, platform, year):
                 return str(mission["missionNumber"])
     except Exception:
         pass
-    return ""
+    # Fall back to the last 3 digits of the cruise number
+    return cruise_number[-3:] if cruise_number and len(cruise_number) >= 3 else ""
 
 
 def get_activities_from_api(after, before, base_url=None):
