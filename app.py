@@ -672,7 +672,7 @@ def build_map_markers(station_matches, current_index):
         )
         popup = dl.Popup(
             html.Div([
-                html.Div(si["name"],
+                html.Div(f"#{i+1} · {si['name']}",
                          style={"fontWeight": "bold", "fontSize": "13px",
                                 "marginBottom": "4px"}),
                 html.Table([
@@ -1087,6 +1087,11 @@ def process_uploaded_files(contents_list, filenames):
         else:
             station_matches = {}
 
+        # Remember each station's position among all CTD stations so the NPC
+        # operationNumber stays stable when empty stations are dropped below
+        for i, v in enumerate(station_matches.values(), 1):
+            v["op_number"] = i
+
         # Only keep stations that actually contain RSK data points
         n_empty = sum(1 for v in station_matches.values() if v["n_datapoints"] == 0)
         station_matches = {k: v for k, v in station_matches.items()
@@ -1133,17 +1138,22 @@ def process_uploaded_files(contents_list, filenames):
     Input({"type": "select-profile-btn", "index": ALL}, "n_clicks"),
     Input("btn-jump-profile",   "n_clicks"),
     Input("input-jump-profile", "n_submit"),
+    Input("store-station-matches", "data"),
     State("input-jump-profile", "value"),
     State("store-current-index",  "data"),
-    State("store-station-matches","data"),
     State("store-excluded",       "data"),
     prevent_initial_call=True,
 )
 def navigate(n_prev, n_next, n_clear, select_clicks, n_jump, n_jump_submit,
-             jump_value, current_idx, station_matches, excluded):
+             station_matches, jump_value, current_idx, excluded):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
     n = len(keys)
+    if triggered == "store-station-matches":
+        # New upload: start at the first profile with no exclusions carried
+        # over (exclusions are row positions within the old profile)
+        return 0, []
+    current_idx = min(max(current_idx or 0, 0), max(n - 1, 0))
     if triggered in ("btn-jump-profile", "input-jump-profile"):
         if not n or jump_value is None:
             return no_update, no_update
@@ -1196,16 +1206,18 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     Output("span-slider",       "marks"),
     Output("span-slider",       "value"),
     Input("store-current-index",   "data"),
+    Input("store-station-matches", "data"),
     State("store-rsk-df",          "data"),
-    State("store-station-matches", "data"),
     prevent_initial_call=True,
 )
-def init_slider(current_idx, rsk_df_json, station_matches):
+def init_slider(current_idx, station_matches, rsk_df_json):
     if not station_matches or not rsk_df_json:
         return 0, 100, {}, [0, 100]
 
     keys       = list(station_matches.keys())
-    data       = station_matches[keys[current_idx]]
+    if not 0 <= (current_idx or 0) < len(keys):
+        return no_update, no_update, no_update, no_update
+    data       = station_matches[keys[current_idx or 0]]
     df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
     df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
     N          = len(df_profile)
@@ -1264,7 +1276,9 @@ def update_span_from_timeseries(relayout_data, current_idx, rsk_df_json,
         return no_update, no_update
 
     keys       = list(station_matches.keys())
-    data       = station_matches[keys[current_idx]]
+    if not 0 <= (current_idx or 0) < len(keys):
+        return no_update, no_update
+    data       = station_matches[keys[current_idx or 0]]
     df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
     df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
 
@@ -1319,6 +1333,8 @@ def compute_npc(span_range, excluded, param_vals,
 
     span_start, span_end = span_range
     keys        = list(station_matches.keys())
+    if not 0 <= (current_idx or 0) < len(keys):
+        return "{}", _meta_sentinel(current_idx), [], ""
     station_key = keys[current_idx]
     data        = station_matches[station_key]
     df_indices  = data["df_rsk_indices"]
@@ -1341,7 +1357,7 @@ def compute_npc(span_range, excluded, param_vals,
             ct_start, ct_end,
             cruise_number or "", vessel_name or "",
             mission_number or "", platform or "",
-            current_idx + 1, rsk_meta or {},
+            data.get("op_number", current_idx + 1), rsk_meta or {},
             data["station_info"],
         )
     except Exception as exc:
@@ -1627,7 +1643,7 @@ def download_npc(n_clicks, span_range, excluded, param_vals,
             ct_start, ct_end,
             cruise_number or "", vessel_name or "",
             mission_number or "", platform or "",
-            current_idx + 1, rsk_meta or {},
+            data.get("op_number", current_idx + 1), rsk_meta or {},
             data["station_info"],
         )
         fname   = _npc_filename(cruise_number, meta.get("operation.timeStart"))
@@ -1711,7 +1727,7 @@ def upload_to_s3(n_clicks, span_range, excluded, param_vals,
             ct_start, ct_end,
             cruise_number or "", vessel_name or "",
             mission_number or "", platform or "",
-            current_idx + 1, rsk_meta or {},
+            data.get("op_number", current_idx + 1), rsk_meta or {},
             data["station_info"],
         )
 
