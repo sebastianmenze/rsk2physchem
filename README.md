@@ -51,6 +51,7 @@ cp .env.example .env
 | `S3_SECRET_ACCESS_KEY` | S3 secret key |
 | `S3_BUCKET` | Target bucket name |
 | `S3_DEST_PREFIX` | Key prefix for uploaded NPC files |
+| `PHYSCHEM_OPERATION_URL` | Optional. Link shown next to **In PhysChem**; `{mission_id}` and `{operation_id}` are filled in. Defaults to the PhysChem editor (`https://physchem-editor.hi.no/mission/{mission_id}/operation/{operation_id}/instrument`) |
 
 ### Run locally
 
@@ -106,9 +107,9 @@ Each image has badges:
 
 | Badge | Meaning |
 |---|---|
-| **In PhysChem** | This operation (same mission and start time) already exists in PhysChem |
+| **In PhysChem** | This operation (same mission and start time) already exists in PhysChem; the **open in PhysChem ↗** link next to it opens the operation |
 | **New** | Not yet in PhysChem — will be uploaded by **Upload new profiles** |
-| **Uploaded** | Uploaded to the S3 inbox in this session |
+| **Uploaded – awaiting PhysChem** | Uploaded to the S3 inbox in this session, not yet listed by PhysChem. After PhysChem has ingested it, **Check PhysChem status** shows **In PhysChem** and **Uploaded** together |
 | **Edited** | Span or exclusions were changed and saved by hand |
 | **No NPC data** | The span produced no depth bins — check this profile |
 | **PhysChem status unknown** | PhysChem could not be queried (check mission # / platform #) |

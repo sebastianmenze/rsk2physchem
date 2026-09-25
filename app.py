@@ -49,6 +49,10 @@ except ImportError:
 TOKTLOGGER_CRUISES_URL    = os.getenv("TOKTLOGGER_CRUISES_URL")
 TOKTLOGGER_ACTIVITIES_URL = os.getenv("TOKTLOGGER_ACTIVITIES_URL")
 PHYSCHEM_API_URL          = os.getenv("PHYSCHEM_API_URL", "https://physchem-api.hi.no")
+# Link shown next to "In PhysChem"; {mission_id} and {operation_id} are filled in
+PHYSCHEM_OPERATION_URL    = os.getenv(
+    "PHYSCHEM_OPERATION_URL",
+    "https://physchem-editor.hi.no/mission/{mission_id}/operation/{operation_id}/instrument")
 S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL")
 S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY")
@@ -102,10 +106,10 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
 
 
-def get_physchem_operation_starts(platform, mission_number):
-    """Return the set of operation timeStart strings already in PhysChem for
-    this mission (empty set if the mission doesn't exist yet), or None if
-    PhysChem could not be queried."""
+def get_physchem_operations(platform, mission_number):
+    """Return (mission_id, {timeStart: operation_id}) for the operations
+    already in PhysChem for this mission ((None, {}) if the mission doesn't
+    exist yet), or None if PhysChem could not be queried."""
     if not platform or not mission_number:
         return None
     try:
@@ -117,11 +121,11 @@ def get_physchem_operation_starts(platform, mission_number):
         resp.raise_for_status()
         df_missions = pd.DataFrame(resp.json())
         if df_missions.empty:
-            return set()
+            return None, {}
 
         match = df_missions["missionNumber"] == int(mission_number)
         if match.sum() == 0:
-            return set()
+            return None, {}
 
         mission_id = df_missions.loc[match, "id"].values[0]
 
@@ -133,8 +137,9 @@ def get_physchem_operation_starts(platform, mission_number):
         resp2.raise_for_status()
         df_ops = pd.DataFrame(resp2.json())
         if df_ops.empty or "timeStart" not in df_ops.columns:
-            return set()
-        return set(df_ops["timeStart"].astype(str))
+            return mission_id, {}
+        op_ids = df_ops["id"] if "id" in df_ops.columns else [None] * len(df_ops)
+        return mission_id, dict(zip(df_ops["timeStart"].astype(str), op_ids))
     except Exception:
         return None
 
@@ -558,11 +563,21 @@ def compute_profile_npc(df_profile, data, edit, params, cruise, rsk_meta, cruise
 
 
 def physchem_status(station_matches, op_starts_by_key, cruise):
-    """Map station key → True (in PhysChem) / False (not yet) / None (unknown)."""
-    existing = get_physchem_operation_starts(cruise.get("platform"),
-                                             cruise.get("mission_number"))
-    return {k: (None if existing is None else ts in existing)
-            for k, ts in op_starts_by_key.items() if k in station_matches}
+    """Return (status, links): station key → True (in PhysChem) / False (not
+    yet) / None (unknown), and station key → PhysChem link for those in it."""
+    result = get_physchem_operations(cruise.get("platform"), cruise.get("mission_number"))
+    keys = [k for k in op_starts_by_key if k in station_matches]
+    if result is None:
+        return {k: None for k in keys}, {}
+    mission_id, ops = result
+    status, links = {}, {}
+    for k in keys:
+        ts = op_starts_by_key[k]
+        status[k] = ts in ops
+        if status[k] and ops[ts] is not None:
+            links[k] = PHYSCHEM_OPERATION_URL.format(
+                mission_id=mission_id, operation_id=ops[ts])
+    return status, links
 
 
 def build_thumbnail(df_profile, span, excluded, df_npc):
@@ -911,6 +926,7 @@ stores = html.Div([
     dcc.Store(id="store-edits",          data={}),    # key → {"span", "excluded", "edited"}
     dcc.Store(id="store-thumbs",         data={}),    # key → {"img", "n_bins"}
     dcc.Store(id="store-physchem",       data={}),    # key → True / False / None
+    dcc.Store(id="store-physchem-links", data={}),    # key → PhysChem URL
     dcc.Store(id="store-uploaded",       data=[]),    # keys uploaded this session
     dcc.Store(id="store-skip",           data=[]),    # keys unticked: no export/upload
     dcc.Store(id="store-view",           data="overview"),
@@ -1241,6 +1257,7 @@ def check_password(n_clicks, n_submit, entered, already_authed):
     Output("store-edits",           "data"),
     Output("store-thumbs",          "data"),
     Output("store-physchem",        "data"),
+    Output("store-physchem-links",  "data"),
     Output("store-uploaded",        "data"),
     Output("store-view",            "data"),
     Output("store-skip",            "data"),
@@ -1252,7 +1269,7 @@ def process_uploaded_files(contents_list, filenames):
     if not contents_list:
         return no_update
 
-    empty_batch = ({}, {}, {}, [], "overview", [])
+    empty_batch = ({}, {}, {}, {}, [], "overview", [])
     if not PYRSK_AVAILABLE:
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "") + empty_batch
@@ -1364,7 +1381,7 @@ def process_uploaded_files(contents_list, filenames):
                 thumbs[key] = {"img": None, "n_bins": 0}
 
         cruise = {"platform": platform, "mission_number": mission_number}
-        in_physchem = physchem_status(
+        in_physchem, physchem_links = physchem_status(
             station_matches,
             {k: v["op_time_start"] for k, v in station_matches.items()}, cruise)
 
@@ -1395,7 +1412,7 @@ def process_uploaded_files(contents_list, filenames):
             vessel_name,
             mission_number,
             platform,
-            edits, thumbs, in_physchem, [], "overview", [],
+            edits, thumbs, in_physchem, physchem_links, [], "overview", [],
         )
 
     except Exception as e:
@@ -1990,15 +2007,23 @@ def show_save_status(span_range, excluded, edits, current_idx, station_matches):
     return html.Span("● Unsaved changes", className="text-warning fw-bold")
 
 
-def _status_badge(key, in_physchem, uploaded, edit, thumb):
+def _status_badge(key, in_physchem, uploaded, edit, thumb, link=None):
+    """PhysChem and upload state are shown independently: a profile uploaded
+    this session shows "Uploaded" until PhysChem lists it, then both."""
     badges = []
-    if key in (uploaded or []):
-        badges.append(dbc.Badge("Uploaded", color="info", className="me-1"))
-    elif in_physchem is True:
+    was_uploaded = key in (uploaded or [])
+    if in_physchem is True:
         badges.append(dbc.Badge("In PhysChem", color="success", className="me-1"))
-    elif in_physchem is False:
+        if link:
+            badges.append(html.A("open in PhysChem ↗", href=link, target="_blank",
+                                 rel="noopener", className="small me-2"))
+    if was_uploaded:
+        badges.append(dbc.Badge("Uploaded" if in_physchem is True
+                                else "Uploaded – awaiting PhysChem",
+                                color="info", className="me-1"))
+    if in_physchem is False and not was_uploaded:
         badges.append(dbc.Badge("New", color="warning", text_color="dark", className="me-1"))
-    else:
+    if in_physchem is None and not was_uploaded:
         badges.append(dbc.Badge("PhysChem status unknown", color="secondary", className="me-1"))
     if edit and edit.get("edited"):
         badges.append(dbc.Badge("Edited", color="primary", className="me-1"))
@@ -2013,11 +2038,12 @@ def _status_badge(key, in_physchem, uploaded, edit, thumb):
     Input("store-thumbs",    "data"),
     Input("store-physchem",  "data"),
     Input("store-uploaded",  "data"),
+    State("store-physchem-links",  "data"),
     State("store-edits",           "data"),
     State("store-station-matches", "data"),
     State("store-skip",            "data"),
 )
-def render_overview(thumbs, in_physchem, uploaded, edits, station_matches, skip):
+def render_overview(thumbs, in_physchem, uploaded, links, edits, station_matches, skip):
     if not station_matches:
         return html.Div("Upload RSK files to begin",
                         className="text-muted text-center mt-5 fs-5")
@@ -2037,7 +2063,7 @@ def render_overview(thumbs, in_physchem, uploaded, edits, station_matches, skip)
              html.Span(station_matches[key]["station_info"]["startTime"],
                        className="text-muted me-2")]
             + _status_badge(key, (in_physchem or {}).get(key), uploaded,
-                            (edits or {}).get(key), thumb)
+                            (edits or {}).get(key), thumb, (links or {}).get(key))
             + [dbc.Button("Edit profile", id={"type": "edit-btn", "index": i},
                           color="primary", size="sm", outline=True,
                           className="ms-auto py-0")],
@@ -2089,7 +2115,7 @@ def grey_out_card(included):
 
 
 _STATUS_COLOURS = {"uploaded": "#0dcaf0", True: "#198754", False: "#fd7e14", None: "#6c757d"}
-_STATUS_LABELS  = {"uploaded": "Uploaded", True: "In PhysChem", False: "New",
+_STATUS_LABELS  = {"uploaded": "Uploaded – awaiting PhysChem", True: "In PhysChem", False: "New",
                    None: "PhysChem status unknown"}
 
 
@@ -2114,15 +2140,18 @@ def fit_overview_map(station_matches):
     Input("store-physchem",        "data"),
     Input("store-uploaded",        "data"),
     Input("store-skip",            "data"),
+    State("store-physchem-links",  "data"),
 )
-def overview_markers(station_matches, in_physchem, uploaded, skip):
+def overview_markers(station_matches, in_physchem, uploaded, skip, links):
     markers = []
     for i, (key, data) in enumerate((station_matches or {}).items()):
         si = data["station_info"]
         lat, lon = si["startLat"], si["startLon"]
         if lat is None or lon is None:
             continue
-        status = "uploaded" if key in (uploaded or []) else (in_physchem or {}).get(key)
+        status = (in_physchem or {}).get(key)
+        if status is not True and key in (uploaded or []):
+            status = "uploaded"
         colour = _STATUS_COLOURS[status]
 
         def row(label, value):
@@ -2138,7 +2167,9 @@ def overview_markers(station_matches, in_physchem, uploaded, skip):
                 row("Lat",      f"{lat:.4f}°"),
                 row("Lon",      f"{lon:.4f}°"),
                 row("Points",   f"{data['n_datapoints']:,}"),
-                row("PhysChem", _STATUS_LABELS[status]),
+                row("PhysChem", html.A("In PhysChem ↗", href=links[key], target="_blank",
+                                       rel="noopener")
+                    if status is True and (links or {}).get(key) else _STATUS_LABELS[status]),
                 row("Export",   "excluded" if key in (skip or []) else "included"),
             ] + ([row("Comment", si["comment"])] if si.get("comment") else []),
                style={"fontSize": "12px", "borderCollapse": "collapse"}),
@@ -2183,7 +2214,7 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
     keys     = [k for k in station_matches if k not in (skip or [])]
     n        = len(keys)
     n_in     = sum(1 for k in keys if in_physchem.get(k) is True)
-    n_up     = sum(1 for k in keys if k in uploaded)
+    n_up     = sum(1 for k in keys if k in uploaded and in_physchem.get(k) is not True)
     n_new    = sum(1 for k in keys
                    if in_physchem.get(k) is False and k not in uploaded)
     n_unk    = sum(1 for k in keys
@@ -2193,7 +2224,7 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
              + (f" ({n_skip} excluded)" if n_skip else ""),
              f"{n_in} in PhysChem", f"{n_new} new"]
     if n_up:
-        parts.append(f"{n_up} uploaded now")
+        parts.append(f"{n_up} uploaded, awaiting PhysChem")
     if n_unk:
         parts.append(f"{n_unk} status unknown")
     fields_complete = all([cruise_number, vessel_name, mission_number, platform])
@@ -2205,6 +2236,7 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
 # ── Re-check PhysChem (e.g. after correcting mission / platform number)
 @app.callback(
     Output("store-physchem", "data", allow_duplicate=True),
+    Output("store-physchem-links", "data", allow_duplicate=True),
     Output("action-status",  "children", allow_duplicate=True),
     Input("btn-check-physchem", "n_clicks"),
     State("store-station-matches", "data"),
@@ -2214,14 +2246,14 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
 )
 def recheck_physchem(n_clicks, station_matches, mission_number, platform):
     if not n_clicks or not station_matches:
-        return no_update, no_update
-    status = physchem_status(
+        return no_update, no_update, no_update
+    status, links = physchem_status(
         station_matches,
         {k: v.get("op_time_start") for k, v in station_matches.items()},
         {"platform": platform, "mission_number": mission_number})
     if any(v is None for v in status.values()):
-        return status, "Could not query PhysChem (check mission # and platform #)."
-    return status, "PhysChem status updated."
+        return status, links, "Could not query PhysChem (check mission # and platform #)."
+    return status, links, "PhysChem status updated."
 
 
 def _all_npcs(station_matches, edits, rsk_df_json, param_vals, cruise,
