@@ -8,7 +8,8 @@ A web application for processing, quality-controlling, and exporting CTD (Conduc
 
 - Upload one or more RBR RSK binary files (multi-cast cruises supported)
 - Automatic station matching against Toktlogger cruise/activity APIs
-- Overview of all profiles as images (downcast + profiles + NPC line) for quick QC, in a grid or stacked vertically
+- Overview of all profiles as images (downcast + profiles + NPC line) for quick QC, stacked vertically, with a station map
+- Per-profile Include tick box to leave profiles out of the NPC export and PhysChem upload
 - PhysChem status per profile (already in PhysChem / new / uploaded)
 - Download all NPC files as one zip, or upload all new profiles to PhysChem at once
 - Interactive 4-panel profile plot (temperature, salinity, dissolved O₂, chlorophyll)
@@ -94,7 +95,11 @@ After processing, the app:
 
 ### 3. Overview of all profiles
 
-The overview shows one image per profile: depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×. Use **Grid** / **Stacked** at the top right to switch layout; the list scrolls vertically.
+At the top of the overview a map shows every station as a numbered marker, coloured by PhysChem status (green: in PhysChem, orange: new, light blue: uploaded, grey: unknown). Click a marker for the station's date, activity, position, number of points and status, and an **Edit profile** button.
+
+Below the map, the overview lists one image per profile (scroll vertically): depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×.
+
+Each profile has an **Include** tick box (all ticked by default). Unticked profiles are greyed out, faded on the map, and left out of **Download all NPC files** and **Upload new profiles**.
 
 Each image has badges:
 
@@ -107,7 +112,7 @@ Each image has badges:
 | **No NPC data** | The span produced no depth bins — check this profile |
 | **PhysChem status unknown** | PhysChem could not be queried (check mission # / platform #) |
 
-**Double-click** an image to open that profile in the interactive view (steps 4–6). There, press **Save** to keep your changes (the overview image is redrawn) and **← Back to overview** to return. Changes that are not saved are discarded when you go back or move to another profile; the toolbar shows **● Unsaved changes** until you save. **Reset to auto downcast** restores the automatic span and clears exclusions.
+Click **Edit profile** (on the profile or in its map popup), or **double-click** the image, to open that profile in the interactive view (steps 4–6). There, press **Save** to keep your changes (the overview image is redrawn) and **← Back to overview** to return. Changes that are not saved are discarded when you go back or move to another profile; the toolbar shows **● Unsaved changes** until you save. **Reset to auto downcast** restores the automatic span and clears exclusions.
 
 In the interactive view, use **← Prev** / **Next →**, **Go to #**, or a map marker's **Select profile** to move between profiles.
 
@@ -184,8 +189,8 @@ Any edits are included in the NPC file the next time you download or upload — 
 
 The **All Profiles** section in the left panel works on every profile at once, using each profile's saved span and exclusions:
 
-- **Download all NPC files (.zip)** — one `.npc` file per profile, named `cruisenumber_YYYYMMDD_HHMMSS.npc`
-- **Upload new profiles to PhysChem** — after a confirmation, sends only the profiles marked **New** to the configured S3 bucket. Profiles already in PhysChem, uploaded earlier in the session, or with unknown status are skipped.
+- **Download all NPC files (.zip)** — one `.npc` file per included profile, named `cruisenumber_YYYYMMDD_HHMMSS.npc`
+- **Upload new profiles to PhysChem** — after a confirmation, sends only the included profiles marked **New** to the configured S3 bucket. Unticked profiles, profiles already in PhysChem, uploaded earlier in the session, or with unknown status are skipped.
 - **Check PhysChem status** — re-queries PhysChem, e.g. after correcting the mission or platform number
 
 Both actions recompute the NPC data from scratch, so edits to the cruise parameters and export parameters are always included. The upload button is disabled until all cruise parameters are filled in and at least one profile is new.

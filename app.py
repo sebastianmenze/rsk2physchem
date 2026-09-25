@@ -27,7 +27,7 @@ from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
 import dash
-from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL, Patch
+from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL, MATCH, Patch
 import dash_leaflet as dl
 import dash_bootstrap_components as dbc
 from dash_extensions import EventListener
@@ -885,6 +885,7 @@ stores = html.Div([
     dcc.Store(id="store-thumbs",         data={}),    # key → {"img", "n_bins"}
     dcc.Store(id="store-physchem",       data={}),    # key → True / False / None
     dcc.Store(id="store-uploaded",       data=[]),    # keys uploaded this session
+    dcc.Store(id="store-skip",           data=[]),    # keys unticked: no export/upload
     dcc.Store(id="store-view",           data="overview"),
 ])
 
@@ -978,7 +979,7 @@ left_panel = dbc.Card([
             dbc.Button("Upload new profiles to PhysChem", id="btn-upload-all",
                        color="primary", size="sm", className="w-100 mb-1", disabled=True),
             id="confirm-upload-all",
-            message="Upload all profiles that are not yet in PhysChem to the S3 inbox?",
+            message="Upload all included profiles that are not yet in PhysChem to the S3 inbox?",
         ),
         dcc.Loading(html.Div(id="action-status", className="small mt-1"), type="dot"),
         dcc.Download(id="download-npc"),
@@ -1044,20 +1045,36 @@ left_panel = dbc.Card([
 overview_panel = html.Div(id="overview-panel", children=[
     html.Div([
         html.Span("Overview", className="fw-bold me-3"),
-        html.Span("Double-click an image to inspect and edit the profile.",
+        html.Span("Click Edit profile (or double-click an image) to inspect and edit a profile.",
                   className="small text-muted me-auto"),
-        dbc.RadioItems(
-            id="overview-layout",
-            options=[{"label": "Grid", "value": "grid"},
-                     {"label": "Stacked", "value": "stack"}],
-            value="stack", inline=True, className="small",
-        ),
     ], style={"display": "flex", "alignItems": "center", "padding": "4px 8px",
               "borderBottom": "1px solid #dee2e6", "flexShrink": "0"}),
-    html.Div(id="overview-grid",
-             children=html.Div("Upload RSK files to begin",
-                               className="text-muted text-center mt-5 fs-5"),
-             style={"overflowY": "auto", "flexGrow": "1", "padding": "8px"}),
+    html.Div([
+        # Station map: numbered markers coloured by PhysChem status;
+        # click a marker for date/metadata and an Edit profile button
+        html.Div([
+            dl.Map(
+                id="overview-map", center=[60, 5], zoom=5,
+                children=[
+                    dl.TileLayer(
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                        attribution="© OpenStreetMap contributors",
+                    ),
+                    dl.LayerGroup(id="overview-markers"),
+                ],
+                style={"height": "320px", "borderRadius": "6px"},
+            ),
+            html.Div([
+                html.Span("● ", style={"color": "#198754"}), "In PhysChem  ",
+                html.Span("● ", style={"color": "#fd7e14"}), "New  ",
+                html.Span("● ", style={"color": "#0dcaf0"}), "Uploaded  ",
+                html.Span("● ", style={"color": "#6c757d"}), "Status unknown",
+            ], className="small text-muted mt-1", style={"whiteSpace": "pre"}),
+        ], id="overview-map-box", style={"marginBottom": "10px"}),
+        html.Div(id="overview-grid",
+                 children=html.Div("Upload RSK files to begin",
+                                   className="text-muted text-center mt-5 fs-5")),
+    ], style={"overflowY": "auto", "flexGrow": "1", "padding": "8px"}),
 ], style={"position": "absolute", "inset": "0", "zIndex": "2000",
           "background": "white", "display": "flex", "flexDirection": "column"})
 
@@ -1199,6 +1216,7 @@ def check_password(n_clicks, n_submit, entered, already_authed):
     Output("store-physchem",        "data"),
     Output("store-uploaded",        "data"),
     Output("store-view",            "data"),
+    Output("store-skip",            "data"),
     Input("upload-rsk", "contents"),
     State("upload-rsk", "filename"),
     prevent_initial_call=True,
@@ -1207,7 +1225,7 @@ def process_uploaded_files(contents_list, filenames):
     if not contents_list:
         return no_update
 
-    empty_batch = ({}, {}, {}, [], "overview")
+    empty_batch = ({}, {}, {}, [], "overview", [])
     if not PYRSK_AVAILABLE:
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
                 "", "", "", "") + empty_batch
@@ -1334,7 +1352,7 @@ def process_uploaded_files(contents_list, filenames):
             vessel_name,
             mission_number,
             platform,
-            edits, thumbs, in_physchem, [], "overview",
+            edits, thumbs, in_physchem, [], "overview", [],
         )
 
     except Exception as e:
@@ -1355,6 +1373,8 @@ def process_uploaded_files(contents_list, filenames):
     Input("btn-reset-auto", "n_clicks"),
     Input({"type": "select-profile-btn", "index": ALL}, "n_clicks"),
     Input({"type": "thumb", "index": ALL}, "n_events"),
+    Input({"type": "edit-btn", "index": ALL}, "n_clicks"),
+    Input({"type": "map-edit-btn", "index": ALL}, "n_clicks"),
     Input("btn-jump-profile",   "n_clicks"),
     Input("input-jump-profile", "n_submit"),
     Input("store-station-matches", "data"),
@@ -1365,7 +1385,7 @@ def process_uploaded_files(contents_list, filenames):
     prevent_initial_call=True,
 )
 def navigate(n_prev, n_next, n_clear, n_reset, select_clicks, thumb_events,
-             n_jump, n_jump_submit, station_matches, jump_value, current_idx,
+             edit_clicks, map_edit_clicks, n_jump, n_jump_submit, station_matches, jump_value, current_idx,
              excluded, edits):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
@@ -1391,7 +1411,7 @@ def navigate(n_prev, n_next, n_clear, n_reset, select_clicks, thumb_events,
     if isinstance(triggered, dict):
         if not triggered_value:
             return no_update, no_update, no_update
-        if triggered.get("type") == "thumb":
+        if triggered.get("type") in ("thumb", "edit-btn", "map-edit-btn"):
             return open_profile(triggered["index"], "detail")
         if triggered.get("type") == "select-profile-btn":
             return open_profile(triggered["index"])
@@ -1432,7 +1452,7 @@ def back_to_overview(n_clicks):
 )
 def toggle_view(view, overview_style):
     overview_style = dict(overview_style or {})
-    overview_style["display"] = "none" if view == "detail" else "flex"
+    overview_style["visibility"] = "hidden" if view == "detail" else "visible"
     return overview_style, {"display": "block" if view == "detail" else "none"}
 
 
@@ -1950,44 +1970,150 @@ def _status_badge(key, in_physchem, uploaded, edit, thumb):
     Input("store-thumbs",    "data"),
     Input("store-physchem",  "data"),
     Input("store-uploaded",  "data"),
-    Input("overview-layout", "value"),
     State("store-edits",           "data"),
     State("store-station-matches", "data"),
+    State("store-skip",            "data"),
 )
-def render_overview(thumbs, in_physchem, uploaded, layout, edits, station_matches):
+def render_overview(thumbs, in_physchem, uploaded, edits, station_matches, skip):
     if not station_matches:
         return html.Div("Upload RSK files to begin",
                         className="text-muted text-center mt-5 fs-5")
-    grid = layout == "grid"
     cards = []
     for i, key in enumerate(station_matches.keys()):
         thumb = (thumbs or {}).get(key) or {}
         img = (html.Img(src=thumb["img"], style={"width": "100%", "display": "block"})
                if thumb.get("img") else
                html.Div("Could not draw this profile", className="text-danger p-4"))
+        included = key not in (skip or [])
         header = html.Div(
-            [html.Span(f"#{i+1} {key}", className="fw-bold me-2"),
+            [html.Div(dbc.Checkbox(id={"type": "include-chk", "index": i}, value=included,
+                                   label="Include", className="mb-0"),
+                      title="Include this profile in the NPC export and PhysChem upload",
+                      className="me-3"),
+             html.Span(f"#{i+1} {key}", className="fw-bold me-2"),
              html.Span(station_matches[key]["station_info"]["startTime"],
                        className="text-muted me-2")]
             + _status_badge(key, (in_physchem or {}).get(key), uploaded,
-                            (edits or {}).get(key), thumb),
+                            (edits or {}).get(key), thumb)
+            + [dbc.Button("Edit profile", id={"type": "edit-btn", "index": i},
+                          color="primary", size="sm", outline=True,
+                          className="ms-auto py-0")],
             className="small px-2 pt-1",
+            style={"display": "flex", "alignItems": "center"},
         )
-        card = EventListener(
-            html.Div([header, img], title="Double-click to inspect / edit",
+        img = EventListener(
+            html.Div(img, title="Double-click to inspect / edit",
                      style={"cursor": "pointer"}),
             id={"type": "thumb", "index": i},
             events=[{"event": "dblclick", "props": []}],
         )
-        cards.append(html.Div(card, style={
-            "border": "1px solid #dee2e6", "borderRadius": "6px",
-            "background": "white", "overflow": "hidden",
-            "marginBottom": "0" if grid else "10px",
-        }))
-    if grid:
-        return html.Div(cards, style={"display": "grid", "gap": "10px",
-                                      "gridTemplateColumns": "repeat(auto-fill, minmax(520px, 1fr))"})
+        cards.append(html.Div([header, img], id={"type": "profile-card", "index": i},
+                              style=_card_style(included)))
     return html.Div(cards)
+
+
+def _card_style(included):
+    return {"border": "1px solid #dee2e6", "borderRadius": "6px",
+            "background": "white" if included else "#f1f3f5",
+            "overflow": "hidden", "marginBottom": "10px",
+            "opacity": "1" if included else "0.45"}
+
+
+# ── Include tick boxes → list of profiles left out of export / upload
+@app.callback(
+    Output("store-skip", "data", allow_duplicate=True),
+    Input({"type": "include-chk", "index": ALL}, "value"),
+    State("store-station-matches", "data"),
+    State("store-skip", "data"),
+    prevent_initial_call=True,
+)
+def collect_included(values, station_matches, skip):
+    keys = list((station_matches or {}).keys())
+    if len(values) != len(keys):
+        return no_update
+    new_skip = [k for k, v in zip(keys, values) if not v]
+    # Re-rendering the cards re-fires this with unchanged values
+    return no_update if new_skip == (skip or []) else new_skip
+
+
+@app.callback(
+    Output({"type": "profile-card", "index": MATCH}, "style"),
+    Input({"type": "include-chk", "index": MATCH}, "value"),
+    prevent_initial_call=True,
+)
+def grey_out_card(included):
+    return _card_style(bool(included))
+
+
+_STATUS_COLOURS = {"uploaded": "#0dcaf0", True: "#198754", False: "#fd7e14", None: "#6c757d"}
+_STATUS_LABELS  = {"uploaded": "Uploaded", True: "In PhysChem", False: "New",
+                   None: "PhysChem status unknown"}
+
+
+# ── Overview map: fit to stations on a new upload only (not on status changes)
+@app.callback(
+    Output("overview-map", "center"),
+    Output("overview-map", "zoom"),
+    Input("store-station-matches", "data"),
+    prevent_initial_call=True,
+)
+def fit_overview_map(station_matches):
+    if not station_matches:
+        return no_update, no_update
+    center, zoom = map_center_zoom(station_matches)
+    return center, max(3, zoom - 1)   # one step out so edge stations aren't clipped
+
+
+# ── Overview map markers: station number label, popup with metadata + edit
+@app.callback(
+    Output("overview-markers", "children"),
+    Input("store-station-matches", "data"),
+    Input("store-physchem",        "data"),
+    Input("store-uploaded",        "data"),
+    Input("store-skip",            "data"),
+)
+def overview_markers(station_matches, in_physchem, uploaded, skip):
+    markers = []
+    for i, (key, data) in enumerate((station_matches or {}).items()):
+        si = data["station_info"]
+        lat, lon = si["startLat"], si["startLon"]
+        if lat is None or lon is None:
+            continue
+        status = "uploaded" if key in (uploaded or []) else (in_physchem or {}).get(key)
+        colour = _STATUS_COLOURS[status]
+
+        def row(label, value):
+            return html.Tr([html.Td(label, style={"color": "#888", "paddingRight": "8px"}),
+                            html.Td(value)])
+        popup = dl.Popup(html.Div([
+            html.Div(f"#{i+1} · {si['name']}",
+                     style={"fontWeight": "bold", "fontSize": "13px", "marginBottom": "4px"}),
+            html.Table([
+                row("Activity", si["activityNumber"]),
+                row("Start",    str(si["startTime"])[:19]),
+                row("End",      str(si["endTime"])[:19]),
+                row("Lat",      f"{lat:.4f}°"),
+                row("Lon",      f"{lon:.4f}°"),
+                row("Points",   f"{data['n_datapoints']:,}"),
+                row("PhysChem", _STATUS_LABELS[status]),
+                row("Export",   "excluded" if key in (skip or []) else "included"),
+            ] + ([row("Comment", si["comment"])] if si.get("comment") else []),
+               style={"fontSize": "12px", "borderCollapse": "collapse"}),
+            dbc.Button("Edit profile", id={"type": "map-edit-btn", "index": i},
+                       color="primary", size="sm",
+                       style={"marginTop": "8px", "width": "100%"}),
+        ], style={"minWidth": "190px"}))
+        markers.append(dl.CircleMarker(
+            center=[lat, lon], radius=9,
+            color="white", weight=2, fillColor=colour,
+            fillOpacity=0.25 if key in (skip or []) else 0.9,
+            children=[
+                dl.Tooltip(str(i + 1), permanent=True, direction="top",
+                           offset=[0, -8], className="station-number"),
+                popup,
+            ],
+        ))
+    return markers
 
 
 # ── Batch summary + enable batch buttons
@@ -1999,25 +2125,30 @@ def render_overview(thumbs, in_physchem, uploaded, layout, edits, station_matche
     Input("store-station-matches", "data"),
     Input("store-physchem",        "data"),
     Input("store-uploaded",        "data"),
+    Input("store-skip",            "data"),
     Input("input-cruise-number",   "value"),
     Input("input-vessel-name",     "value"),
     Input("input-mission-number",  "value"),
     Input("input-platform",        "value"),
 )
-def batch_summary(station_matches, in_physchem, uploaded,
+def batch_summary(station_matches, in_physchem, uploaded, skip,
                   cruise_number, vessel_name, mission_number, platform):
     if not station_matches:
         return "", True, True, True
     in_physchem = in_physchem or {}
     uploaded = set(uploaded or [])
-    n        = len(station_matches)
-    n_in     = sum(1 for k in station_matches if in_physchem.get(k) is True)
-    n_up     = sum(1 for k in station_matches if k in uploaded)
-    n_new    = sum(1 for k in station_matches
+    keys     = [k for k in station_matches if k not in (skip or [])]
+    n        = len(keys)
+    n_in     = sum(1 for k in keys if in_physchem.get(k) is True)
+    n_up     = sum(1 for k in keys if k in uploaded)
+    n_new    = sum(1 for k in keys
                    if in_physchem.get(k) is False and k not in uploaded)
-    n_unk    = sum(1 for k in station_matches
+    n_unk    = sum(1 for k in keys
                    if in_physchem.get(k) is None and k not in uploaded)
-    parts = [f"{n} profiles", f"{n_in} in PhysChem", f"{n_new} new"]
+    n_skip   = len(station_matches) - n
+    parts = [f"{n} profiles included"
+             + (f" ({n_skip} excluded)" if n_skip else ""),
+             f"{n_in} in PhysChem", f"{n_new} new"]
     if n_up:
         parts.append(f"{n_up} uploaded now")
     if n_unk:
@@ -2025,7 +2156,7 @@ def batch_summary(station_matches, in_physchem, uploaded,
     fields_complete = all([cruise_number, vessel_name, mission_number, platform])
     can_upload = fields_complete and n_new > 0
     hint = "" if fields_complete else " · fill in all cruise parameters to upload"
-    return " · ".join(parts) + hint, False, False, not can_upload
+    return " · ".join(parts) + hint, False, n == 0, not can_upload
 
 
 # ── Re-check PhysChem (e.g. after correcting mission / platform number)
@@ -2069,6 +2200,7 @@ def _all_npcs(station_matches, edits, rsk_df_json, param_vals, cruise,
     Output("action-status", "children"),
     Input("btn-download-all", "n_clicks"),
     State("store-station-matches", "data"),
+    State("store-skip",            "data"),
     State("store-edits",           "data"),
     State("store-rsk-df",          "data"),
     State("checklist-params",      "value"),
@@ -2080,7 +2212,7 @@ def _all_npcs(station_matches, edits, rsk_df_json, param_vals, cruise,
     State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def download_all_npc(n_clicks, station_matches, edits, rsk_df_json, param_vals,
+def download_all_npc(n_clicks, station_matches, skip, edits, rsk_df_json, param_vals,
                      rsk_meta, cruise_times,
                      cruise_number, vessel_name, mission_number, platform):
     if not n_clicks or not station_matches or not rsk_df_json:
@@ -2088,8 +2220,10 @@ def download_all_npc(n_clicks, station_matches, edits, rsk_df_json, param_vals,
     cruise = _cruise_from_inputs(cruise_number, vessel_name, mission_number, platform)
     buf, names, skipped = BytesIO(), set(), []
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        keys = [k for k in station_matches if k not in (skip or [])]
         for key, df_npc, meta in _all_npcs(station_matches, edits, rsk_df_json,
-                                           param_vals, cruise, rsk_meta, cruise_times):
+                                           param_vals, cruise, rsk_meta, cruise_times,
+                                           keys=keys):
             if not len(df_npc):
                 skipped.append(key)
                 continue
@@ -2114,6 +2248,7 @@ def download_all_npc(n_clicks, station_matches, edits, rsk_df_json, param_vals,
     Output("action-status",  "children", allow_duplicate=True),
     Input("confirm-upload-all", "submit_n_clicks"),
     State("store-station-matches", "data"),
+    State("store-skip",            "data"),
     State("store-physchem",        "data"),
     State("store-uploaded",        "data"),
     State("store-edits",           "data"),
@@ -2127,7 +2262,7 @@ def download_all_npc(n_clicks, station_matches, edits, rsk_df_json, param_vals,
     State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def upload_all_new(n_clicks, station_matches, in_physchem, uploaded, edits,
+def upload_all_new(n_clicks, station_matches, skip, in_physchem, uploaded, edits,
                    rsk_df_json, param_vals, rsk_meta, cruise_times,
                    cruise_number, vessel_name, mission_number, platform):
     if not n_clicks or not station_matches or not rsk_df_json:
@@ -2137,9 +2272,10 @@ def upload_all_new(n_clicks, station_matches, in_physchem, uploaded, edits,
     uploaded = list(uploaded or [])
     # Only profiles PhysChem confirmed it doesn't have (unknown status is skipped)
     todo = [k for k in station_matches
-            if (in_physchem or {}).get(k) is False and k not in uploaded]
+            if (in_physchem or {}).get(k) is False and k not in uploaded
+            and k not in (skip or [])]
     if not todo:
-        return no_update, "Nothing to upload – all profiles are already in PhysChem."
+        return no_update, "Nothing to upload – all included profiles are already in PhysChem."
     cruise = _cruise_from_inputs(cruise_number, vessel_name, mission_number, platform)
     done, failed = [], []
     for key, df_npc, meta in _all_npcs(station_matches, edits, rsk_df_json, param_vals,
