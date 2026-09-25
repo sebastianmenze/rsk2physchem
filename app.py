@@ -603,6 +603,11 @@ def compute_profile_npc(df_profile, data, edit, params, cruise, rsk_meta, cruise
     )
 
 
+def _in_physchem_keys(status):
+    """Profiles confirmed in PhysChem start unticked (no re-export/upload)."""
+    return [k for k, v in (status or {}).items() if v is True]
+
+
 def _start_year(cruise_times, fallback=None):
     """Mission start year as written to the NPC (mission.startYear)."""
     start = (cruise_times or {}).get("start")
@@ -1463,7 +1468,8 @@ def process_uploaded_files(contents_list, filenames):
             vessel_name,
             mission_number,
             platform,
-            edits, thumbs, in_physchem, physchem_links, [], "overview", [],
+            edits, thumbs, in_physchem, physchem_links, [], "overview",
+            _in_physchem_keys(in_physchem),   # untick profiles already in PhysChem
         )
 
     except Exception as e:
@@ -2276,20 +2282,19 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
         return "", True, True, True
     in_physchem = in_physchem or {}
     uploaded = set(uploaded or [])
-    keys     = [k for k in station_matches if k not in (skip or [])]
+    keys     = [k for k in station_matches if k not in (skip or [])]   # ticked
     n        = len(keys)
-    n_in     = sum(1 for k in keys if in_physchem.get(k) is True)
-    n_check  = sum(1 for k in keys if in_physchem.get(k) == "check")
-    n_up     = sum(1 for k in keys if k in uploaded
+    # PhysChem counts over all profiles; new / unknown over ticked ones only
+    n_in     = sum(1 for k in station_matches if in_physchem.get(k) is True)
+    n_check  = sum(1 for k in station_matches if in_physchem.get(k) == "check")
+    n_up     = sum(1 for k in station_matches if k in uploaded
                    and in_physchem.get(k) not in (True, "check"))
     n_new    = sum(1 for k in keys
                    if in_physchem.get(k) is False and k not in uploaded)
     n_unk    = sum(1 for k in keys
                    if in_physchem.get(k) is None and k not in uploaded)
-    n_skip   = len(station_matches) - n
-    parts = [f"{n} profiles included"
-             + (f" ({n_skip} excluded)" if n_skip else ""),
-             f"{n_in} in PhysChem", f"{n_new} new"]
+    parts = [f"{len(station_matches)} profiles ({n} ticked)",
+             f"{n_in} in PhysChem", f"{n_new} new to upload"]
     if n_check:
         parts.append(f"{n_check} possible match – check")
     if n_up:
@@ -2306,24 +2311,30 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
 @app.callback(
     Output("store-physchem", "data", allow_duplicate=True),
     Output("store-physchem-links", "data", allow_duplicate=True),
+    Output("store-skip",     "data", allow_duplicate=True),
     Output("action-status",  "children", allow_duplicate=True),
     Input("btn-check-physchem", "n_clicks"),
     State("store-station-matches", "data"),
     State("input-mission-number",  "value"),
     State("input-platform",        "value"),
     State("store-cruise-times",    "data"),
+    State("store-skip",            "data"),
     prevent_initial_call=True,
 )
-def recheck_physchem(n_clicks, station_matches, mission_number, platform, cruise_times):
+def recheck_physchem(n_clicks, station_matches, mission_number, platform, cruise_times,
+                     skip):
     if not n_clicks or not station_matches:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     status, links = physchem_status(
         station_matches,
         {"platform": platform, "mission_number": mission_number,
          "start_year": _start_year(cruise_times)})
+    # Untick profiles newly found in PhysChem; manual choices otherwise stay
+    skip = list(skip or [])
+    skip += [k for k in _in_physchem_keys(status) if k not in skip]
     if any(v is None for v in status.values()):
-        return status, links, "Could not query PhysChem (check mission # and platform #)."
-    return status, links, "PhysChem status updated."
+        return status, links, skip, "Could not query PhysChem (check mission # and platform #)."
+    return status, links, skip, "PhysChem status updated."
 
 
 def _all_npcs(station_matches, edits, rsk_df_json, param_vals, cruise,
