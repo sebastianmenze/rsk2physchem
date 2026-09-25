@@ -53,6 +53,11 @@ PHYSCHEM_API_URL          = os.getenv("PHYSCHEM_API_URL", "https://physchem-api.
 PHYSCHEM_OPERATION_URL    = os.getenv(
     "PHYSCHEM_OPERATION_URL",
     "https://physchem-editor.hi.no/mission/{mission_id}/operation/{operation_id}/instrument")
+# A profile matches a PhysChem CTD operation if the start times differ by at
+# most PHYSCHEM_MATCH_MINUTES and (when both have positions) the start
+# positions are at most PHYSCHEM_MATCH_KM apart
+PHYSCHEM_MATCH_MINUTES    = float(os.getenv("PHYSCHEM_MATCH_MINUTES", "10"))
+PHYSCHEM_MATCH_KM         = float(os.getenv("PHYSCHEM_MATCH_KM", "2"))
 S3_ENDPOINT_URL           = os.getenv("S3_ENDPOINT_URL")
 S3_ACCESS_KEY_ID          = os.getenv("S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY      = os.getenv("S3_SECRET_ACCESS_KEY")
@@ -106,28 +111,29 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
 
 
-def get_physchem_operations(platform, mission_number):
-    """Return (mission_id, {timeStart: operation_id}) for the operations
-    already in PhysChem for this mission ((None, {}) if the mission doesn't
-    exist yet), or None if PhysChem could not be queried."""
+def get_physchem_operations(platform, mission_number, start_year=None):
+    """Return (mission_id, operations) for the PhysChem mission identified by
+    platform + missionNumber (preferring the one with this startYear), where
+    operations is a list of {"id", "type", "time", "lat", "lon"}. Returns
+    (None, []) if the mission doesn't exist yet, or None if PhysChem could
+    not be queried."""
     if not platform or not mission_number:
         return None
     try:
         resp = requests.get(
             f"{PHYSCHEM_API_URL}/mission/list",
-            params={"platform": platform},
+            params={"platform": platform, "missionNumber": int(mission_number)},
             timeout=10,
         )
         resp.raise_for_status()
-        df_missions = pd.DataFrame(resp.json())
-        if df_missions.empty:
-            return None, {}
-
-        match = df_missions["missionNumber"] == int(mission_number)
-        if match.sum() == 0:
-            return None, {}
-
-        mission_id = df_missions.loc[match, "id"].values[0]
+        missions = [m for m in resp.json()
+                    if str(m.get("missionNumber")) == str(int(mission_number))]
+        if not missions:
+            return None, []
+        # missionNumber repeats across years: prefer the cruise's start year
+        same_year = [m for m in missions if start_year and m.get("startYear") == int(start_year)]
+        mission_id = (same_year or sorted(missions, key=lambda m: m.get("startYear") or 0,
+                                          reverse=True))[0]["id"]
 
         resp2 = requests.get(
             f"{PHYSCHEM_API_URL}/mission/{mission_id}/operation/list",
@@ -135,13 +141,48 @@ def get_physchem_operations(platform, mission_number):
             timeout=10,
         )
         resp2.raise_for_status()
-        df_ops = pd.DataFrame(resp2.json())
-        if df_ops.empty or "timeStart" not in df_ops.columns:
-            return mission_id, {}
-        op_ids = df_ops["id"] if "id" in df_ops.columns else [None] * len(df_ops)
-        return mission_id, dict(zip(df_ops["timeStart"].astype(str), op_ids))
-    except Exception:
+        ops = []
+        for op in resp2.json():
+            try:
+                t = ensure_utc(op["timeStart"])
+            except Exception:
+                continue
+            ops.append({"id": op.get("id"), "type": op.get("operationType"),
+                        "number": op.get("operationNumber"), "time": t,
+                        "lat": op.get("latitudeStart"), "lon": op.get("longitudeStart")})
+        return mission_id, ops
+    except Exception as exc:
+        print(f"[physchem] query failed: {exc}", flush=True)
         return None
+
+
+def _distance_km(lat1, lon1, lat2, lon2):
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    a = (np.sin((lat2 - lat1) / 2) ** 2
+         + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2)
+    return float(6371.0 * 2 * np.arcsin(np.sqrt(a)))
+
+
+def match_physchem_operation(time_start, lat, lon, ops):
+    """Find the PhysChem CTD operation for a profile. Returns (status, op, info):
+    status True (time and position match), "check" (time matches but the
+    position is too far off), or False (no operation near that time)."""
+    t = ensure_utc(time_start)
+    tol = pd.Timedelta(minutes=PHYSCHEM_MATCH_MINUTES)
+    near = [op for op in ops
+            if (op["type"] in (None, "CTD")) and abs(op["time"] - t) <= tol]
+    if not near:
+        return False, None, ""
+    op = min(near, key=lambda o: abs(o["time"] - t))
+    dt_s = abs((op["time"] - t).total_seconds())
+    info = f"op #{op['number']} · Δt {dt_s / 60:.1f} min" if dt_s >= 60 else \
+           f"op #{op['number']} · Δt {dt_s:.0f} s"
+    have_pos = None not in (lat, lon, op["lat"], op["lon"])
+    if not have_pos:
+        return True, op, info + " · position not compared"
+    dist = _distance_km(lat, lon, op["lat"], op["lon"])
+    info += f" · {dist:.2f} km"
+    return (True if dist <= PHYSCHEM_MATCH_KM else "check"), op, info
 
 
 def get_mission_number_from_physchem(cruise_number, platform, year):
@@ -562,21 +603,32 @@ def compute_profile_npc(df_profile, data, edit, params, cruise, rsk_meta, cruise
     )
 
 
-def physchem_status(station_matches, op_starts_by_key, cruise):
-    """Return (status, links): station key → True (in PhysChem) / False (not
-    yet) / None (unknown), and station key → PhysChem link for those in it."""
-    result = get_physchem_operations(cruise.get("platform"), cruise.get("mission_number"))
-    keys = [k for k in op_starts_by_key if k in station_matches]
+def _start_year(cruise_times, fallback=None):
+    """Mission start year as written to the NPC (mission.startYear)."""
+    start = (cruise_times or {}).get("start")
+    if start:
+        return pd.Timestamp(start).year
+    return pd.Timestamp(fallback).year if fallback is not None else None
+
+
+def physchem_status(station_matches, cruise):
+    """Return (status, links) for every profile. status: station key → True
+    (in PhysChem) / "check" (time matches, position doesn't) / False (not yet)
+    / None (unknown). links: station key → {"url", "info"} for matched ones."""
+    result = get_physchem_operations(cruise.get("platform"), cruise.get("mission_number"),
+                                     cruise.get("start_year"))
     if result is None:
-        return {k: None for k in keys}, {}
+        return {k: None for k in station_matches}, {}
     mission_id, ops = result
     status, links = {}, {}
-    for k in keys:
-        ts = op_starts_by_key[k]
-        status[k] = ts in ops
-        if status[k] and ops[ts] is not None:
-            links[k] = PHYSCHEM_OPERATION_URL.format(
-                mission_id=mission_id, operation_id=ops[ts])
+    for k, v in station_matches.items():
+        si = v["station_info"]
+        status[k], op, info = match_physchem_operation(
+            v["op_time_start"], si.get("startLat"), si.get("startLon"), ops)
+        if op is not None:
+            url = (PHYSCHEM_OPERATION_URL.format(mission_id=mission_id, operation_id=op["id"])
+                   if op["id"] is not None else None)
+            links[k] = {"url": url, "info": info}
     return status, links
 
 
@@ -1380,10 +1432,9 @@ def process_uploaded_files(contents_list, filenames):
                 print(f"[upload] thumbnail failed for {key}: {exc}", flush=True)
                 thumbs[key] = {"img": None, "n_bins": 0}
 
-        cruise = {"platform": platform, "mission_number": mission_number}
-        in_physchem, physchem_links = physchem_status(
-            station_matches,
-            {k: v["op_time_start"] for k, v in station_matches.items()}, cruise)
+        cruise = {"platform": platform, "mission_number": mission_number,
+                  "start_year": _start_year(cruise_times, t_min)}
+        in_physchem, physchem_links = physchem_status(station_matches, cruise)
 
         n_files    = len(tmp_paths)
         n_stations = len(station_matches)
@@ -2012,13 +2063,22 @@ def _status_badge(key, in_physchem, uploaded, edit, thumb, link=None):
     this session shows "Uploaded" until PhysChem lists it, then both."""
     badges = []
     was_uploaded = key in (uploaded or [])
+    link = link or {}
     if in_physchem is True:
-        badges.append(dbc.Badge("In PhysChem", color="success", className="me-1"))
-        if link:
-            badges.append(html.A("open in PhysChem ↗", href=link, target="_blank",
-                                 rel="noopener", className="small me-2"))
+        badges.append(dbc.Badge("In PhysChem", color="success", className="me-1",
+                                title=link.get("info", "")))
+    if in_physchem == "check":
+        badges.append(dbc.Badge("Possible match in PhysChem – check", color="danger",
+                                className="me-1",
+                                title="Start time matches a PhysChem operation but the "
+                                      "position is further away than expected: "
+                                      + link.get("info", "")))
+    if in_physchem in (True, "check") and link.get("url"):
+        badges.append(html.A("open in PhysChem ↗", href=link["url"], target="_blank",
+                             rel="noopener", className="small me-2",
+                             title=link.get("info", "")))
     if was_uploaded:
-        badges.append(dbc.Badge("Uploaded" if in_physchem is True
+        badges.append(dbc.Badge("Uploaded" if in_physchem in (True, "check")
                                 else "Uploaded – awaiting PhysChem",
                                 color="info", className="me-1"))
     if in_physchem is False and not was_uploaded:
@@ -2114,8 +2174,10 @@ def grey_out_card(included):
     return _card_style(bool(included))
 
 
-_STATUS_COLOURS = {"uploaded": "#0dcaf0", True: "#198754", False: "#fd7e14", None: "#6c757d"}
-_STATUS_LABELS  = {"uploaded": "Uploaded – awaiting PhysChem", True: "In PhysChem", False: "New",
+_STATUS_COLOURS = {"uploaded": "#0dcaf0", True: "#198754", "check": "#dc3545",
+                   False: "#fd7e14", None: "#6c757d"}
+_STATUS_LABELS  = {"uploaded": "Uploaded – awaiting PhysChem", True: "In PhysChem",
+                   "check": "Possible match – check", False: "New",
                    None: "PhysChem status unknown"}
 
 
@@ -2150,7 +2212,7 @@ def overview_markers(station_matches, in_physchem, uploaded, skip, links):
         if lat is None or lon is None:
             continue
         status = (in_physchem or {}).get(key)
-        if status is not True and key in (uploaded or []):
+        if status not in (True, "check") and key in (uploaded or []):
             status = "uploaded"
         colour = _STATUS_COLOURS[status]
 
@@ -2167,9 +2229,12 @@ def overview_markers(station_matches, in_physchem, uploaded, skip, links):
                 row("Lat",      f"{lat:.4f}°"),
                 row("Lon",      f"{lon:.4f}°"),
                 row("Points",   f"{data['n_datapoints']:,}"),
-                row("PhysChem", html.A("In PhysChem ↗", href=links[key], target="_blank",
-                                       rel="noopener")
-                    if status is True and (links or {}).get(key) else _STATUS_LABELS[status]),
+                row("PhysChem", html.A(_STATUS_LABELS[status] + " ↗",
+                                       href=links[key]["url"], target="_blank", rel="noopener")
+                    if status in (True, "check") and ((links or {}).get(key) or {}).get("url")
+                    else _STATUS_LABELS[status]),
+            ] + ([row("Match", links[key]["info"])]
+                 if status in (True, "check") and (links or {}).get(key) else []) + [
                 row("Export",   "excluded" if key in (skip or []) else "included"),
             ] + ([row("Comment", si["comment"])] if si.get("comment") else []),
                style={"fontSize": "12px", "borderCollapse": "collapse"}),
@@ -2214,7 +2279,9 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
     keys     = [k for k in station_matches if k not in (skip or [])]
     n        = len(keys)
     n_in     = sum(1 for k in keys if in_physchem.get(k) is True)
-    n_up     = sum(1 for k in keys if k in uploaded and in_physchem.get(k) is not True)
+    n_check  = sum(1 for k in keys if in_physchem.get(k) == "check")
+    n_up     = sum(1 for k in keys if k in uploaded
+                   and in_physchem.get(k) not in (True, "check"))
     n_new    = sum(1 for k in keys
                    if in_physchem.get(k) is False and k not in uploaded)
     n_unk    = sum(1 for k in keys
@@ -2223,6 +2290,8 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
     parts = [f"{n} profiles included"
              + (f" ({n_skip} excluded)" if n_skip else ""),
              f"{n_in} in PhysChem", f"{n_new} new"]
+    if n_check:
+        parts.append(f"{n_check} possible match – check")
     if n_up:
         parts.append(f"{n_up} uploaded, awaiting PhysChem")
     if n_unk:
@@ -2242,15 +2311,16 @@ def batch_summary(station_matches, in_physchem, uploaded, skip,
     State("store-station-matches", "data"),
     State("input-mission-number",  "value"),
     State("input-platform",        "value"),
+    State("store-cruise-times",    "data"),
     prevent_initial_call=True,
 )
-def recheck_physchem(n_clicks, station_matches, mission_number, platform):
+def recheck_physchem(n_clicks, station_matches, mission_number, platform, cruise_times):
     if not n_clicks or not station_matches:
         return no_update, no_update, no_update
     status, links = physchem_status(
         station_matches,
-        {k: v.get("op_time_start") for k, v in station_matches.items()},
-        {"platform": platform, "mission_number": mission_number})
+        {"platform": platform, "mission_number": mission_number,
+         "start_year": _start_year(cruise_times)})
     if any(v is None for v in status.values()):
         return status, links, "Could not query PhysChem (check mission # and platform #)."
     return status, links, "PhysChem status updated."

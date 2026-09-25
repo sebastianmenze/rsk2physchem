@@ -51,6 +51,8 @@ cp .env.example .env
 | `S3_SECRET_ACCESS_KEY` | S3 secret key |
 | `S3_BUCKET` | Target bucket name |
 | `S3_DEST_PREFIX` | Key prefix for uploaded NPC files |
+| `PHYSCHEM_MATCH_MINUTES` | Optional (default 10). Max. start-time difference for a profile to match a PhysChem operation |
+| `PHYSCHEM_MATCH_KM` | Optional (default 2). Max. distance between start positions for a match |
 | `PHYSCHEM_OPERATION_URL` | Optional. Link shown next to **In PhysChem**; `{mission_id}` and `{operation_id}` are filled in. Defaults to the PhysChem editor (`https://physchem-editor.hi.no/mission/{mission_id}/operation/{operation_id}/instrument`) |
 
 ### Run locally
@@ -107,7 +109,8 @@ Each image has badges:
 
 | Badge | Meaning |
 |---|---|
-| **In PhysChem** | This operation (same mission and start time) already exists in PhysChem; the **open in PhysChem ↗** link next to it opens the operation |
+| **In PhysChem** | A CTD operation of this mission in PhysChem starts within ±10 min of the profile and (if both have positions) within 2 km; the **open in PhysChem ↗** link opens it, and hovering shows the time difference and distance |
+| **Possible match in PhysChem – check** | A CTD operation starts at the same time but its position is further away than 2 km. Open the link to check; these profiles are not uploaded automatically |
 | **New** | Not yet in PhysChem — will be uploaded by **Upload new profiles** |
 | **Uploaded – awaiting PhysChem** | Uploaded to the S3 inbox in this session, not yet listed by PhysChem. After PhysChem has ingested it, **Check PhysChem status** shows **In PhysChem** and **Uploaded** together |
 | **Edited** | Span or exclusions were changed and saved by hand |
@@ -186,6 +189,14 @@ The **Cruise Parameters** fields are auto-filled from the Toktlogger API but can
 Any edits are included in the NPC file the next time you download or upload — the data are always recomputed fresh at that point.
 
 ---
+
+#### How the PhysChem check works
+
+1. The mission is looked up by **Platform #** and **Mission #** (`/mission/list`). If several years use the same mission number, the one whose start year matches the cruise is used.
+2. The mission's operations are fetched (`/mission/{id}/operation/list`). For each profile, the CTD operation with the closest `timeStart` within ±`PHYSCHEM_MATCH_MINUTES` is taken, comparing real timestamps (time zones and formats don't matter).
+3. If both the profile (Toktlogger start position) and the operation have a start position, the distance must be within `PHYSCHEM_MATCH_KM`; otherwise the profile is flagged **Possible match – check**.
+
+If PhysChem can't be reached, profiles show **PhysChem status unknown** and are not uploaded.
 
 ### 9. Download or upload all NPC files
 
