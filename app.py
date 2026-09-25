@@ -178,6 +178,33 @@ def get_activities_from_api(after, before, base_url=None):
     return df
 
 
+def get_cruise_ctd_activities(cruise):
+    """All Toktlogger CTD activities of a cruise (from its start to its end, or
+    now if it is still running), sorted by start time. Empty on failure."""
+    try:
+        start = ensure_utc(cruise["startTime"])
+        end   = cruise.get("endTime")
+        end   = ensure_utc(end) if end is not None and not pd.isna(end) \
+                else pd.Timestamp.now(tz="UTC")
+        df = get_activities_from_api(
+            (start - pd.Timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            (end + pd.Timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.999Z"))
+    except Exception as exc:
+        print(f"[cruise-ctd] could not fetch cruise activities: {exc}", flush=True)
+        return pd.DataFrame()
+    if df.empty or "activityMainGroupName" not in df.columns:
+        return pd.DataFrame()
+    df = df[df["activityMainGroupName"] == "CTD"]
+    return df.sort_values(["startTime", "activityNumber"]).reset_index(drop=True)
+
+
+def cruise_operation_numbers(df_cruise_ctd):
+    """Station key → operation number (1..N over all CTD casts of the cruise),
+    so numbers stay the same when a cruise's RSK files are uploaded in stages."""
+    return {f"{row['name']}_{row['activityNumber']}": i
+            for i, (_, row) in enumerate(df_cruise_ctd.iterrows(), 1)}
+
+
 def process_rsk_file(filepath):
     """Read a single RSK file and return (df, meta)."""
     rsk = pyrsktools.RSK(filepath)
@@ -1276,6 +1303,7 @@ def process_uploaded_files(contents_list, filenames):
         # Fetch cruise & activities from API
         df_cruises = get_cruises_from_api()
         cruise_number = vessel_name = mission_number = platform = ""
+        matched = None
         if len(df_cruises):
             matched = match_cruise_by_dates(t_min, t_max, df_cruises)
             if matched:
@@ -1287,11 +1315,16 @@ def process_uploaded_files(contents_list, filenames):
 
         df_tk = get_activities_from_api(after_str, before_str)
 
+        # All CTD casts of the whole cruise: gives operation numbers and
+        # mission start/stop that don't depend on which RSK files are uploaded
+        df_cruise_ctd = get_cruise_ctd_activities(matched) if matched else pd.DataFrame()
+
         cruise_times = {}
-        if len(df_tk):
+        span_src = df_cruise_ctd if len(df_cruise_ctd) else df_tk
+        if len(span_src):
             cruise_times = {
-                "start": df_tk["startTime"].min().isoformat(),
-                "end":   df_tk["endTime"].max().isoformat(),
+                "start": span_src["startTime"].min().isoformat(),
+                "end":   span_src["endTime"].max().isoformat(),
             }
 
         # Match stations
@@ -1300,10 +1333,16 @@ def process_uploaded_files(contents_list, filenames):
         else:
             station_matches = {}
 
-        # Remember each station's position among all CTD stations so the NPC
-        # operationNumber stays stable when empty stations are dropped below
-        for i, v in enumerate(station_matches.values(), 1):
-            v["op_number"] = i
+        # operationNumber: position among all CTD casts of the cruise. Falls
+        # back to the position among the stations in this upload if the
+        # cruise's activity list isn't available.
+        op_numbers = cruise_operation_numbers(df_cruise_ctd)
+        n_fallback = 0
+        for i, (k, v) in enumerate(station_matches.items(), 1):
+            v["op_number"] = op_numbers.get(k)
+            if v["op_number"] is None:
+                v["op_number"] = i
+                n_fallback += 1
 
         # Only keep stations that actually contain RSK data points
         n_empty = sum(1 for v in station_matches.values() if v["n_datapoints"] == 0)
@@ -1336,6 +1375,10 @@ def process_uploaded_files(contents_list, filenames):
             f"{len(df_all):,} data points · "
             f"{n_stations} CTD stations matched"
             + (f" ({n_empty} without data skipped)" if n_empty else "")
+            + (f" · operation numbers from cruise ({len(df_cruise_ctd)} CTD casts)"
+               if len(df_cruise_ctd) and not n_fallback else "")
+            + (f" · ⚠ {n_fallback} operation number(s) not found in the cruise's"
+               " activity list – numbered by upload order" if n_fallback else "")
         )
 
         # Serialise RSK data

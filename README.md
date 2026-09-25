@@ -88,6 +88,7 @@ After processing, the app:
 - Queries the Toktlogger API to find cruise and station metadata matching the data timestamps
 - Populates the **Cruise Parameters** fields (cruise number, vessel, mission, platform)
 - Skips CTD stations that contain no RSK data points
+- Numbers operations (`operation.operationNumber`) by each station's position among all Toktlogger CTD activities of the whole cruise, sorted by start time, so numbers stay the same when a cruise's RSK files are uploaded in several stages. Mission start/stop dates also come from the whole cruise. If the cruise's activity list can't be fetched, stations are numbered in upload order and the status line warns about it.
 - Auto-detects the downcast of every profile, computes its NPC bins, and draws an overview image
 - Checks which profiles are already in PhysChem
 
