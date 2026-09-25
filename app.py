@@ -27,7 +27,7 @@ from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
 import dash
-from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL, MATCH, Patch
+from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL, Patch
 import dash_leaflet as dl
 import dash_bootstrap_components as dbc
 from dash_extensions import EventListener
@@ -2142,16 +2142,11 @@ def render_overview(thumbs, in_physchem, uploaded, links, edits, station_matches
             id={"type": "thumb", "index": i},
             events=[{"event": "dblclick", "props": []}],
         )
-        cards.append(html.Div([header, img], id={"type": "profile-card", "index": i},
-                              style=_card_style(included)))
+        cards.append(html.Div([header, img], style={
+            "border": "1px solid #dee2e6", "borderRadius": "6px",
+            "background": "white", "overflow": "hidden", "marginBottom": "10px",
+        }))
     return html.Div(cards)
-
-
-def _card_style(included):
-    return {"border": "1px solid #dee2e6", "borderRadius": "6px",
-            "background": "white" if included else "#f1f3f5",
-            "overflow": "hidden", "marginBottom": "10px",
-            "opacity": "1" if included else "0.45"}
 
 
 # ── Include tick boxes → list of profiles left out of export / upload
@@ -2169,15 +2164,6 @@ def collect_included(values, station_matches, skip):
     new_skip = [k for k, v in zip(keys, values) if not v]
     # Re-rendering the cards re-fires this with unchanged values
     return no_update if new_skip == (skip or []) else new_skip
-
-
-@app.callback(
-    Output({"type": "profile-card", "index": MATCH}, "style"),
-    Input({"type": "include-chk", "index": MATCH}, "value"),
-    prevent_initial_call=True,
-)
-def grey_out_card(included):
-    return _card_style(bool(included))
 
 
 _STATUS_COLOURS = {"uploaded": "#0dcaf0", True: "#198754", "check": "#dc3545",

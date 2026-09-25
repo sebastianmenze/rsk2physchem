@@ -103,7 +103,7 @@ At the top of the overview a map shows every station as a numbered marker, colou
 
 Below the map, the overview lists one image per profile (scroll vertically): depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×.
 
-Each profile has an **Include** tick box. Profiles already **In PhysChem** start unticked (also when **Check PhysChem status** finds them later); all others start ticked. You can tick or untick any profile by hand. Unticked profiles are greyed out, faded on the map, and left out of **Download all NPC files** and **Upload new profiles**.
+Each profile has an **Include** tick box. Profiles already **In PhysChem** start unticked (also when **Check PhysChem status** finds them later); all others start ticked. You can tick or untick any profile by hand. Unticked profiles are faded on the map and left out of **Download all NPC files** and **Upload new profiles**.
 
 Each image has badges:
 
