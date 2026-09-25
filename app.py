@@ -11,8 +11,9 @@ import uuid
 import json
 import base64
 import tempfile
+import zipfile
 from datetime import datetime
-from io import StringIO
+from io import StringIO, BytesIO
 
 import numpy as np
 import pandas as pd
@@ -20,11 +21,16 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import find_peaks
+import matplotlib
+matplotlib.use("Agg")
+from matplotlib.figure import Figure
+import matplotlib.dates as mdates
 
 import dash
-from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL
+from dash import dcc, html, Input, Output, State, callback, no_update, ctx, ALL, Patch
 import dash_leaflet as dl
 import dash_bootstrap_components as dbc
+from dash_extensions import EventListener
 
 try:
     import pyrsktools
@@ -96,15 +102,13 @@ def match_cruise_by_dates(start_date, end_date, df_cruises):
     return max(matches, key=lambda x: x["overlap"])["cruise"].to_dict()
 
 
-def check_if_operation_in_physchem(meta):
-    """Return True if this operation already exists in the PhysChem database."""
+def get_physchem_operation_starts(platform, mission_number):
+    """Return the set of operation timeStart strings already in PhysChem for
+    this mission (empty set if the mission doesn't exist yet), or None if
+    PhysChem could not be queried."""
+    if not platform or not mission_number:
+        return None
     try:
-        platform       = meta.get("mission.platform", "")
-        mission_number = meta.get("mission.missionNumber", "")
-        time_start     = meta.get("operation.timeStart", "")
-        if not platform or not mission_number or not time_start:
-            return False
-
         resp = requests.get(
             f"{PHYSCHEM_API_URL}/mission/list",
             params={"platform": platform},
@@ -113,11 +117,11 @@ def check_if_operation_in_physchem(meta):
         resp.raise_for_status()
         df_missions = pd.DataFrame(resp.json())
         if df_missions.empty:
-            return False
+            return set()
 
         match = df_missions["missionNumber"] == int(mission_number)
         if match.sum() == 0:
-            return False
+            return set()
 
         mission_id = df_missions.loc[match, "id"].values[0]
 
@@ -129,11 +133,10 @@ def check_if_operation_in_physchem(meta):
         resp2.raise_for_status()
         df_ops = pd.DataFrame(resp2.json())
         if df_ops.empty or "timeStart" not in df_ops.columns:
-            return False
-
-        return bool(np.isin(df_ops["timeStart"], time_start).sum() > 0)
+            return set()
+        return set(df_ops["timeStart"].astype(str))
     except Exception:
-        return False
+        return None
 
 
 def get_mission_number_from_physchem(cruise_number, platform, year):
@@ -488,6 +491,137 @@ def npc_to_string(meta, df):
 
 
 # ─────────────────────────────────────────────
+# Batch helpers (all profiles at once)
+# ─────────────────────────────────────────────
+
+def profile_df(df_all, data):
+    """Rows of one station, re-indexed 0..N-1 (spans/exclusions use these positions)."""
+    return df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+
+
+def auto_span(df_profile):
+    """Default span: the detected downcast, or the whole cast if none is found."""
+    N = len(df_profile)
+    if N == 0:
+        return [0, 0]
+    ix_down = detect_downcast(df_profile)
+    if ix_down.any():
+        down_idx = df_profile.index[ix_down]
+        return [int(down_idx.min()), int(down_idx.max())]
+    return [0, N - 1]
+
+
+def op_time_start(df_profile):
+    """operation.timeStart as written to the NPC file (used to match PhysChem)."""
+    return pd.Timestamp(df_profile["timestamp"].min()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compute_profile_npc(df_profile, data, edit, params, cruise, rsk_meta, cruise_times):
+    """NPC for one profile from its saved edit {"span": [s, e], "excluded": [...]}."""
+    span_start, span_end = edit["span"]
+    span = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
+    return calculate_df_npc(
+        df_profile, span, set(edit.get("excluded") or []),
+        "o2" in (params or []), "chl" in (params or []),
+        (cruise_times or {}).get("start"), (cruise_times or {}).get("end"),
+        cruise.get("cruise_number") or "", cruise.get("vessel_name") or "",
+        cruise.get("mission_number") or "", cruise.get("platform") or "",
+        data.get("op_number", 1), rsk_meta or {}, data["station_info"],
+    )
+
+
+def physchem_status(station_matches, op_starts_by_key, cruise):
+    """Map station key → True (in PhysChem) / False (not yet) / None (unknown)."""
+    existing = get_physchem_operation_starts(cruise.get("platform"),
+                                             cruise.get("mission_number"))
+    return {k: (None if existing is None else ts in existing)
+            for k, ts in op_starts_by_key.items() if k in station_matches}
+
+
+def build_thumbnail(df_profile, span, excluded, df_npc):
+    """PNG (data URI) with the depth-time downcast view and the four profiles,
+    for scanning all casts quickly in the overview."""
+    fig = Figure(figsize=(15, 3.0), dpi=72)
+    axes = fig.subplots(1, 5, gridspec_kw={"width_ratios": [2.2, 1, 1, 1, 1]})
+    fig.subplots_adjust(left=0.055, right=0.99, top=0.9, bottom=0.14, wspace=0.28)
+
+    N = len(df_profile)
+    excl = sorted(i for i in (excluded or []) if 0 <= i < N)
+    s0, s1 = (int(span[0]), min(int(span[1]), N - 1)) if N else (0, -1)
+    in_span = np.zeros(N, dtype=bool)
+    if s1 >= s0:
+        in_span[s0:s1 + 1] = True
+    is_excl = np.zeros(N, dtype=bool)
+    is_excl[excl] = True
+    keep = in_span & ~is_excl
+
+    ts    = pd.to_datetime(df_profile["timestamp"])
+    depth = df_profile["depth"].to_numpy()
+
+    # Depth vs time with the NPC span highlighted
+    ax = axes[0]
+    ax.plot(ts, -depth, color="#aaaaaa", lw=0.8)
+    if keep.any():
+        ax.plot(ts[keep], -depth[keep], ".", color="steelblue", ms=1.5)
+        ax.axvspan(ts.iloc[s0], ts.iloc[s1], color="steelblue", alpha=0.15)
+    if is_excl.any():
+        ax.plot(ts[is_excl], -depth[is_excl], "x", color="red", ms=3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    ax.set_ylabel("Depth (m)")
+    ax.set_title("Downcast", fontsize=10)
+
+    panels = [("temperature", "Temperature (°C)", "TEMP.value"),
+              ("salinity", "Salinity (PSU)", "PSAL.value"),
+              ("dissolved_o2_concentration", "O₂ (µmol/l)", "DOX.value"),
+              ("chlorophyll", "Chl (µg/l)", "ChlA_SENS.value")]
+    for ax, (col, label, npc_col) in zip(axes[1:], panels):
+        ax.set_title(label, fontsize=10)
+        if col not in df_profile.columns or not df_profile[col].notna().any():
+            ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                    transform=ax.transAxes, color="#888888")
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
+        x = df_profile[col].to_numpy()
+        if keep.any():
+            ax.plot(x[keep], -depth[keep], ".", color="#555555", ms=1.2, alpha=0.5)
+        if is_excl.any():
+            ax.plot(x[is_excl & in_span], -depth[is_excl & in_span], "x", color="red", ms=3)
+        if len(df_npc) and npc_col in df_npc.columns:
+            ax.plot(df_npc[npc_col], -df_npc["DEPTH.value"], color="red", lw=1.5)
+        ax.tick_params(labelsize=8)
+    for ax in axes:
+        ax.grid(alpha=0.3)
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def thumbnail_for(df_profile, data, edit, rsk_meta, cruise_times):
+    """Thumbnail with NPC line for one profile (NPC with all channels, for display).
+    Returns (data URI, number of NPC depth bins)."""
+    df_npc, _ = compute_profile_npc(df_profile, data, edit, ["o2", "chl"], {},
+                                    rsk_meta, cruise_times)
+    return build_thumbnail(df_profile, edit["span"], edit.get("excluded"), df_npc), len(df_npc)
+
+
+def s3_put_npc(meta, df_npc, cruise_number):
+    """Upload one NPC file to the PhysChem S3 inbox; returns the object key."""
+    os.environ["AWS_REQUEST_CHECKSUM_CALCULATION"]  = "when_required"
+    os.environ["AWS_RESPONSE_CHECKSUM_VALIDATION"]  = "when_required"
+    s3 = boto3.resource(
+        service_name="s3",
+        endpoint_url=S3_ENDPOINT_URL,
+        aws_access_key_id=S3_ACCESS_KEY_ID,
+        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+    )
+    fname = _npc_filename(cruise_number, meta.get("operation.timeStart"))
+    dest  = f"{S3_DEST_PREFIX.rstrip('/')}/{fname}"
+    s3.Bucket(S3_BUCKET).put_object(Key=dest, Body=npc_to_string(meta, df_npc).encode("utf-8"))
+    return dest
+
+
+# ─────────────────────────────────────────────
 # Plotly helpers
 # ─────────────────────────────────────────────
 
@@ -746,6 +880,12 @@ stores = html.Div([
     dcc.Store(id="store-span-range",     data=[0, 0]),
     dcc.Store(id="store-cruise-times",   data={}),
     dcc.Store(id="store-tmpfiles",       data=[]),
+    # Batch / overview state
+    dcc.Store(id="store-edits",          data={}),    # key → {"span", "excluded", "edited"}
+    dcc.Store(id="store-thumbs",         data={}),    # key → {"img", "n_bins"}
+    dcc.Store(id="store-physchem",       data={}),    # key → True / False / None
+    dcc.Store(id="store-uploaded",       data=[]),    # keys uploaded this session
+    dcc.Store(id="store-view",           data="overview"),
 ])
 
 login_modal = dbc.Modal([
@@ -813,6 +953,41 @@ left_panel = dbc.Card([
 
         html.Hr(),
 
+        # ── Export parameters (apply to all NPC files)
+        dbc.Label("Export Parameters", className="fw-bold"),
+        dbc.Checklist(
+            id="checklist-params",
+            options=[
+                {"label": " Include Dissolved O₂", "value": "o2"},
+                {"label": " Include Chlorophyll",   "value": "chl"},
+            ],
+            value=["o2", "chl"],
+            className="mb-2",
+        ),
+
+        html.Hr(),
+
+        # ── Batch actions (all profiles)
+        dbc.Label("All Profiles", className="fw-bold"),
+        html.Div(id="batch-summary", className="small text-muted mb-1"),
+        dbc.Button("Check PhysChem status", id="btn-check-physchem",
+                   color="secondary", size="sm", className="w-100 mb-1", disabled=True),
+        dbc.Button("Download all NPC files (.zip)", id="btn-download-all",
+                   color="success", size="sm", className="w-100 mb-1", disabled=True),
+        dcc.ConfirmDialogProvider(
+            dbc.Button("Upload new profiles to PhysChem", id="btn-upload-all",
+                       color="primary", size="sm", className="w-100 mb-1", disabled=True),
+            id="confirm-upload-all",
+            message="Upload all profiles that are not yet in PhysChem to the S3 inbox?",
+        ),
+        dcc.Loading(html.Div(id="action-status", className="small mt-1"), type="dot"),
+        dcc.Download(id="download-npc"),
+
+        html.Hr(),
+
+        # ── Controls for the interactive (single-profile) view only
+        html.Div(id="detail-controls", style={"display": "none"}, children=[
+
         # ── Station navigation
         dbc.Label("Navigation", className="fw-bold"),
         html.Div(id="nav-label", className="text-center fw-bold mb-1"),
@@ -841,38 +1016,18 @@ left_panel = dbc.Card([
 
         html.Hr(),
 
-        # ── Export parameters
-        dbc.Label("Export Parameters", className="fw-bold"),
-        dbc.Checklist(
-            id="checklist-params",
-            options=[
-                {"label": " Include Dissolved O₂", "value": "o2"},
-                {"label": " Include Chlorophyll",   "value": "chl"},
-            ],
-            value=["o2", "chl"],
-            className="mb-2",
-        ),
-
-        html.Hr(),
-
         # ── QC controls
         dbc.Label("QC Controls", className="fw-bold"),
         html.Div([
             dbc.Button("Clear Exclusions", id="btn-clear-excl",
                        color="warning", size="sm", className="me-1 mb-1"),
+            dbc.Button("Reset to auto downcast", id="btn-reset-auto",
+                       color="secondary", size="sm", outline=True, className="mb-1"),
         ]),
         html.Div(id="excl-count-label",
                  className="text-danger small mb-2"),
 
-        html.Hr(),
-
-        # ── Actions
-        dbc.Label("Actions", className="fw-bold"),
-        dbc.Button("Download NPC File", id="btn-download-npc",
-                   color="success", size="sm", className="w-100 mb-1", disabled=True),
-        dbc.Button("Upload to PhysChem (S3)", id="btn-upload-s3",
-                   color="primary", size="sm", className="w-100 mb-1", disabled=True),
-        html.Div(id="action-status", className="small mt-1"),
+        ]),  # end detail-controls
 
         html.Div([
             html.A("Documentation & Code",
@@ -880,13 +1035,44 @@ left_panel = dbc.Card([
                    target="_blank",
                    className="small text-muted"),
         ], className="mt-2"),
-
-        dcc.Download(id="download-npc"),
     ]),
 ], style={"height": "100vh", "overflowY": "auto"})
 
+# ── Overview: one image per profile, double-click to open the interactive view.
+# Drawn as an overlay on top of the interactive view (rather than hiding the
+# latter with display:none) so the Leaflet map and Plotly graphs keep their size.
+overview_panel = html.Div(id="overview-panel", children=[
+    html.Div([
+        html.Span("Overview", className="fw-bold me-3"),
+        html.Span("Double-click an image to inspect and edit the profile.",
+                  className="small text-muted me-auto"),
+        dbc.RadioItems(
+            id="overview-layout",
+            options=[{"label": "Grid", "value": "grid"},
+                     {"label": "Stacked", "value": "stack"}],
+            value="stack", inline=True, className="small",
+        ),
+    ], style={"display": "flex", "alignItems": "center", "padding": "4px 8px",
+              "borderBottom": "1px solid #dee2e6", "flexShrink": "0"}),
+    html.Div(id="overview-grid",
+             children=html.Div("Upload RSK files to begin",
+                               className="text-muted text-center mt-5 fs-5"),
+             style={"overflowY": "auto", "flexGrow": "1", "padding": "8px"}),
+], style={"position": "absolute", "inset": "0", "zIndex": "2000",
+          "background": "white", "display": "flex", "flexDirection": "column"})
+
 right_panel = dbc.Card([
+    overview_panel,
     dbc.CardBody([
+        # ── Detail toolbar: back / save
+        html.Div([
+            dbc.Button("← Back to overview", id="btn-back-overview",
+                       color="secondary", size="sm", className="me-2"),
+            dbc.Button("Save", id="btn-save-profile",
+                       color="success", size="sm", className="me-2"),
+            html.Span(id="save-status", className="small"),
+        ], style={"display": "flex", "alignItems": "center", "flexShrink": "0"}),
+
         # ── Top row: Map (left) + Depth-time plot (right)
         dbc.Row([
             dbc.Col([
@@ -951,7 +1137,10 @@ right_panel = dbc.Card([
     ], style={"display": "flex", "flexDirection": "column",
               "height": "100%", "padding": "8px", "gap": "4px",
               "overflowY": "auto"}),
-], style={"height": "calc(100vh - 16px)", "overflow": "hidden"})
+# isolation: the overview overlay's z-index (above Leaflet's panes) then only
+# applies inside this card and can't cover the login modal.
+], style={"height": "calc(100vh - 16px)", "overflow": "hidden",
+          "position": "relative", "isolation": "isolate"})
 
 app.layout = dbc.Container([
     stores,
@@ -1005,6 +1194,11 @@ def check_password(n_clicks, n_submit, entered, already_authed):
     Output("input-vessel-name",     "value"),
     Output("input-mission-number",  "value"),
     Output("input-platform",        "value"),
+    Output("store-edits",           "data"),
+    Output("store-thumbs",          "data"),
+    Output("store-physchem",        "data"),
+    Output("store-uploaded",        "data"),
+    Output("store-view",            "data"),
     Input("upload-rsk", "contents"),
     State("upload-rsk", "filename"),
     prevent_initial_call=True,
@@ -1013,9 +1207,10 @@ def process_uploaded_files(contents_list, filenames):
     if not contents_list:
         return no_update
 
+    empty_batch = ({}, {}, {}, [], "overview")
     if not PYRSK_AVAILABLE:
         return ({}, {}, {}, {}, [], "Error: pyrsktools not installed",
-                "", "", "", "")
+                "", "", "", "") + empty_batch
 
     # Normalise to lists (single-file upload may pass bare strings)
     if isinstance(contents_list, str):
@@ -1097,6 +1292,25 @@ def process_uploaded_files(contents_list, filenames):
         station_matches = {k: v for k, v in station_matches.items()
                            if v["n_datapoints"] > 0}
 
+        # Batch: auto downcast span, NPC and overview image for every profile
+        edits, thumbs = {}, {}
+        for key, data in station_matches.items():
+            df_prof = profile_df(df_all, data)
+            data["op_time_start"] = op_time_start(df_prof)
+            edits[key] = {"span": auto_span(df_prof), "excluded": [], "edited": False}
+            try:
+                img, n_bins = thumbnail_for(df_prof, data, edits[key],
+                                            rsk_meta, cruise_times)
+                thumbs[key] = {"img": img, "n_bins": n_bins}
+            except Exception as exc:
+                print(f"[upload] thumbnail failed for {key}: {exc}", flush=True)
+                thumbs[key] = {"img": None, "n_bins": 0}
+
+        cruise = {"platform": platform, "mission_number": mission_number}
+        in_physchem = physchem_status(
+            station_matches,
+            {k: v["op_time_start"] for k, v in station_matches.items()}, cruise)
+
         n_files    = len(tmp_paths)
         n_stations = len(station_matches)
         status_msg = (
@@ -1120,63 +1334,106 @@ def process_uploaded_files(contents_list, filenames):
             vessel_name,
             mission_number,
             platform,
+            edits, thumbs, in_physchem, [], "overview",
         )
 
     except Exception as e:
         import traceback; traceback.print_exc()
         return ({}, {}, {}, {}, tmp_paths,
-                f"Error: {e}", "", "", "", "")
+                f"Error: {e}", "", "", "", "") + empty_batch
 
 
-# ── Navigation (buttons + map popup "Select profile" button)
+# ── Navigation (buttons, map popup "Select profile", overview double-click).
+# Opening a profile loads its saved exclusions; unsaved edits are discarded.
 @app.callback(
     Output("store-current-index", "data"),
     Output("store-excluded",      "data"),
+    Output("store-view",          "data", allow_duplicate=True),
     Input("btn-prev",  "n_clicks"),
     Input("btn-next",  "n_clicks"),
     Input("btn-clear-excl", "n_clicks"),
+    Input("btn-reset-auto", "n_clicks"),
     Input({"type": "select-profile-btn", "index": ALL}, "n_clicks"),
+    Input({"type": "thumb", "index": ALL}, "n_events"),
     Input("btn-jump-profile",   "n_clicks"),
     Input("input-jump-profile", "n_submit"),
     Input("store-station-matches", "data"),
     State("input-jump-profile", "value"),
     State("store-current-index",  "data"),
     State("store-excluded",       "data"),
+    State("store-edits",          "data"),
     prevent_initial_call=True,
 )
-def navigate(n_prev, n_next, n_clear, select_clicks, n_jump, n_jump_submit,
-             station_matches, jump_value, current_idx, excluded):
+def navigate(n_prev, n_next, n_clear, n_reset, select_clicks, thumb_events,
+             n_jump, n_jump_submit, station_matches, jump_value, current_idx,
+             excluded, edits):
     triggered = ctx.triggered_id
     keys = list(station_matches.keys()) if station_matches else []
     n = len(keys)
+    edits = edits or {}
+
+    def open_profile(idx, view=no_update):
+        excl = list(edits.get(keys[idx], {}).get("excluded", [])) if n else []
+        return idx, excl, view
+
     if triggered == "store-station-matches":
-        # New upload: start at the first profile with no exclusions carried
-        # over (exclusions are row positions within the old profile)
-        return 0, []
-    current_idx = min(max(current_idx or 0, 0), max(n - 1, 0))
-    if triggered in ("btn-jump-profile", "input-jump-profile"):
-        if not n or jump_value is None:
-            return no_update, no_update
-        target = min(max(int(jump_value), 1), n) - 1
-        if target == current_idx:
-            return no_update, no_update
-        return target, []
-    if triggered == "btn-prev":
-        return max(0, current_idx - 1), []
-    if triggered == "btn-next":
-        return min(n - 1, current_idx + 1), []
-    if triggered == "btn-clear-excl":
-        return current_idx, []
-    if isinstance(triggered, dict) and triggered.get("type") == "select-profile-btn":
-        # Guard against ghost fires: when update_display rebuilds map-markers,
-        # Dash re-mounts the select-profile-btn components and fires this
-        # callback with n_clicks=None (not a real click).  Only act when the
-        # triggering button has an actual positive click count.
-        triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
+        # New upload: start at the first profile (exclusions are row
+        # positions within a profile, so nothing carries over)
+        return (0, [], no_update) if not n else open_profile(0)
+    if not n:
+        return no_update, no_update, no_update
+    current_idx = min(max(current_idx or 0, 0), n - 1)
+
+    # Guard against ghost fires: re-rendering the map markers / overview
+    # re-mounts these pattern-matched components and fires this callback with
+    # n_clicks / n_events of None or 0 (not a real click).
+    triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
+    if isinstance(triggered, dict):
         if not triggered_value:
-            return no_update, no_update
-        return triggered["index"], []
-    return current_idx, excluded
+            return no_update, no_update, no_update
+        if triggered.get("type") == "thumb":
+            return open_profile(triggered["index"], "detail")
+        if triggered.get("type") == "select-profile-btn":
+            return open_profile(triggered["index"])
+
+    if triggered in ("btn-jump-profile", "input-jump-profile"):
+        if jump_value is None:
+            return no_update, no_update, no_update
+        target = min(max(int(jump_value), 1), n) - 1
+    elif triggered == "btn-prev":
+        target = max(0, current_idx - 1)
+    elif triggered == "btn-next":
+        target = min(n - 1, current_idx + 1)
+    elif triggered in ("btn-clear-excl", "btn-reset-auto"):
+        return current_idx, [], no_update
+    else:
+        return current_idx, excluded, no_update
+    if target == current_idx:
+        return no_update, no_update, no_update
+    return open_profile(target)
+
+
+# ── Back to overview (unsaved edits in the interactive view are dropped)
+@app.callback(
+    Output("store-view", "data", allow_duplicate=True),
+    Input("btn-back-overview", "n_clicks"),
+    prevent_initial_call=True,
+)
+def back_to_overview(n_clicks):
+    return "overview" if n_clicks else no_update
+
+
+# ── Show overview or interactive view
+@app.callback(
+    Output("overview-panel",  "style"),
+    Output("detail-controls", "style"),
+    Input("store-view", "data"),
+    State("overview-panel", "style"),
+)
+def toggle_view(view, overview_style):
+    overview_style = dict(overview_style or {})
+    overview_style["display"] = "none" if view == "detail" else "flex"
+    return overview_style, {"display": "block" if view == "detail" else "none"}
 
 
 # ── Collect excluded points from plot selections
@@ -1199,7 +1456,7 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     return list(new_excl)
 
 
-# ── Initialise slider when station changes
+# ── Initialise slider when station changes (from the profile's saved span)
 @app.callback(
     Output("span-slider",       "min"),
     Output("span-slider",       "max"),
@@ -1207,30 +1464,31 @@ def collect_exclusions(selected_data, excluded, current_idx, station_matches):
     Output("span-slider",       "value"),
     Input("store-current-index",   "data"),
     Input("store-station-matches", "data"),
+    Input("btn-reset-auto",        "n_clicks"),
     State("store-rsk-df",          "data"),
+    State("store-edits",           "data"),
     prevent_initial_call=True,
 )
-def init_slider(current_idx, station_matches, rsk_df_json):
+def init_slider(current_idx, station_matches, n_reset, rsk_df_json, edits):
     if not station_matches or not rsk_df_json:
         return 0, 100, {}, [0, 100]
 
     keys       = list(station_matches.keys())
     if not 0 <= (current_idx or 0) < len(keys):
         return no_update, no_update, no_update, no_update
-    data       = station_matches[keys[current_idx or 0]]
+    key        = keys[current_idx or 0]
+    data       = station_matches[key]
     df_all     = pd.read_json(StringIO(rsk_df_json), orient="split")
-    df_profile = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
+    df_profile = profile_df(df_all, data)
     N          = len(df_profile)
     if N == 0:
         return 0, 0, {}, [0, 0]
 
-    ix_down = detect_downcast(df_profile)
-    if ix_down.any():
-        down_idx   = df_profile.index[ix_down].tolist()
-        span_start = min(down_idx)
-        span_end   = max(down_idx)
+    saved = (edits or {}).get(key)
+    if saved and ctx.triggered_id != "btn-reset-auto":
+        span_start, span_end = saved["span"]
     else:
-        span_start, span_end = 0, N - 1
+        span_start, span_end = auto_span(df_profile)
 
     ts = df_profile["timestamp"]
     marks = {}
@@ -1600,100 +1858,220 @@ def _render_profile(station_matches, excluded, npc_json,
         return empty
 
 
-# ── Download NPC
+def _cruise_from_inputs(cruise_number, vessel_name, mission_number, platform):
+    return {"cruise_number": cruise_number, "vessel_name": vessel_name,
+            "mission_number": mission_number, "platform": platform}
+
+
+# ── Save edits of the profile open in the interactive view
 @app.callback(
-    Output("download-npc",  "data"),
-    Output("action-status", "children", allow_duplicate=True),
-    Input("btn-download-npc", "n_clicks"),
+    Output("store-edits",  "data", allow_duplicate=True),
+    Output("store-thumbs", "data", allow_duplicate=True),
+    Output("save-status",  "children", allow_duplicate=True),
+    Input("btn-save-profile", "n_clicks"),
+    State("store-current-index",   "data"),
     State("store-span-range",      "data"),
     State("store-excluded",        "data"),
-    State("checklist-params",      "value"),
-    State("store-current-index",   "data"),
     State("store-station-matches", "data"),
     State("store-rsk-df",          "data"),
     State("store-rsk-meta",        "data"),
     State("store-cruise-times",    "data"),
-    State("input-cruise-number",   "value"),
-    State("input-vessel-name",     "value"),
-    State("input-mission-number",  "value"),
-    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def download_npc(n_clicks, span_range, excluded, param_vals,
-                 current_idx, station_matches, rsk_df_json, rsk_meta,
-                 cruise_times, cruise_number, vessel_name, mission_number, platform):
-    if not station_matches or not rsk_df_json or not span_range:
-        return no_update, "No NPC data available – select a span first."
+def save_profile(n_clicks, current_idx, span_range, excluded,
+                 station_matches, rsk_df_json, rsk_meta, cruise_times):
+    if not n_clicks or not station_matches or not rsk_df_json or not span_range:
+        return no_update, no_update, no_update
+    keys = list(station_matches.keys())
+    if not 0 <= (current_idx or 0) < len(keys):
+        return no_update, no_update, no_update
+    key  = keys[current_idx]
+    data = station_matches[key]
+    edit = {"span": [int(span_range[0]), int(span_range[1])],
+            "excluded": sorted(int(i) for i in (excluded or [])),
+            "edited": True}
+    df_prof = profile_df(pd.read_json(StringIO(rsk_df_json), orient="split"), data)
     try:
-        span_start, span_end = span_range
-        keys        = list(station_matches.keys())
-        key         = keys[current_idx]
-        data        = station_matches[key]
-        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
-        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
-        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
-        if not new_span:
-            return no_update, "No NPC data available – select a span first."
-        ct_start = cruise_times.get("start") if cruise_times else None
-        ct_end   = cruise_times.get("end")   if cruise_times else None
-        df_npc, meta = calculate_df_npc(
-            df_profile, new_span, set(excluded or []),
-            "o2" in (param_vals or []),
-            "chl" in (param_vals or []),
-            ct_start, ct_end,
-            cruise_number or "", vessel_name or "",
-            mission_number or "", platform or "",
-            data.get("op_number", current_idx + 1), rsk_meta or {},
-            data["station_info"],
-        )
-        fname   = _npc_filename(cruise_number, meta.get("operation.timeStart"))
-        content = npc_to_string(meta, df_npc)
-        return (dict(content=content, filename=fname, type="text/plain"),
-                f"Downloaded {fname}")
-    except Exception as e:
-        return no_update, f"Download error: {e}"
+        img, n_bins = thumbnail_for(df_prof, data, edit, rsk_meta, cruise_times)
+    except Exception as exc:
+        return no_update, no_update, html.Span(f"Save failed: {exc}", className="text-danger")
+    # Patch only this profile's entries (avoids re-sending every image)
+    edits, thumbs = Patch(), Patch()
+    edits[key]  = edit
+    thumbs[key] = {"img": img, "n_bins": n_bins}
+    return edits, thumbs, html.Span("✓ Saved", className="text-success")
 
 
-# ── Enable/disable action buttons based on whether a valid NPC exists
+# ── Saved / unsaved indicator in the interactive view
 @app.callback(
-    Output("btn-download-npc", "disabled"),
-    Output("btn-upload-s3",    "disabled"),
-    Output("action-status",    "children"),
-    Input("store-npc",             "data"),
-    Input("store-npc-meta",        "data"),
+    Output("save-status", "children"),
+    Input("store-span-range", "data"),
+    Input("store-excluded",   "data"),
+    Input("store-edits",      "data"),
+    State("store-current-index",   "data"),
+    State("store-station-matches", "data"),
+)
+def show_save_status(span_range, excluded, edits, current_idx, station_matches):
+    if not station_matches or not span_range:
+        return ""
+    keys = list(station_matches.keys())
+    if not 0 <= (current_idx or 0) < len(keys):
+        return ""
+    saved = (edits or {}).get(keys[current_idx])
+    if not saved:
+        return ""
+    same = (list(map(int, span_range)) == list(saved["span"])
+            and sorted(map(int, excluded or [])) == sorted(saved["excluded"]))
+    if same:
+        return html.Span("Saved", className="text-muted")
+    return html.Span("● Unsaved changes", className="text-warning fw-bold")
+
+
+def _status_badge(key, in_physchem, uploaded, edit, thumb):
+    badges = []
+    if key in (uploaded or []):
+        badges.append(dbc.Badge("Uploaded", color="info", className="me-1"))
+    elif in_physchem is True:
+        badges.append(dbc.Badge("In PhysChem", color="success", className="me-1"))
+    elif in_physchem is False:
+        badges.append(dbc.Badge("New", color="warning", text_color="dark", className="me-1"))
+    else:
+        badges.append(dbc.Badge("PhysChem status unknown", color="secondary", className="me-1"))
+    if edit and edit.get("edited"):
+        badges.append(dbc.Badge("Edited", color="primary", className="me-1"))
+    if not thumb or not thumb.get("n_bins"):
+        badges.append(dbc.Badge("No NPC data", color="danger", className="me-1"))
+    return badges
+
+
+# ── Overview images
+@app.callback(
+    Output("overview-grid", "children"),
+    Input("store-thumbs",    "data"),
+    Input("store-physchem",  "data"),
+    Input("store-uploaded",  "data"),
+    Input("overview-layout", "value"),
+    State("store-edits",           "data"),
+    State("store-station-matches", "data"),
+)
+def render_overview(thumbs, in_physchem, uploaded, layout, edits, station_matches):
+    if not station_matches:
+        return html.Div("Upload RSK files to begin",
+                        className="text-muted text-center mt-5 fs-5")
+    grid = layout == "grid"
+    cards = []
+    for i, key in enumerate(station_matches.keys()):
+        thumb = (thumbs or {}).get(key) or {}
+        img = (html.Img(src=thumb["img"], style={"width": "100%", "display": "block"})
+               if thumb.get("img") else
+               html.Div("Could not draw this profile", className="text-danger p-4"))
+        header = html.Div(
+            [html.Span(f"#{i+1} {key}", className="fw-bold me-2"),
+             html.Span(station_matches[key]["station_info"]["startTime"],
+                       className="text-muted me-2")]
+            + _status_badge(key, (in_physchem or {}).get(key), uploaded,
+                            (edits or {}).get(key), thumb),
+            className="small px-2 pt-1",
+        )
+        card = EventListener(
+            html.Div([header, img], title="Double-click to inspect / edit",
+                     style={"cursor": "pointer"}),
+            id={"type": "thumb", "index": i},
+            events=[{"event": "dblclick", "props": []}],
+        )
+        cards.append(html.Div(card, style={
+            "border": "1px solid #dee2e6", "borderRadius": "6px",
+            "background": "white", "overflow": "hidden",
+            "marginBottom": "0" if grid else "10px",
+        }))
+    if grid:
+        return html.Div(cards, style={"display": "grid", "gap": "10px",
+                                      "gridTemplateColumns": "repeat(auto-fill, minmax(520px, 1fr))"})
+    return html.Div(cards)
+
+
+# ── Batch summary + enable batch buttons
+@app.callback(
+    Output("batch-summary",      "children"),
+    Output("btn-check-physchem", "disabled"),
+    Output("btn-download-all",   "disabled"),
+    Output("btn-upload-all",     "disabled"),
+    Input("store-station-matches", "data"),
+    Input("store-physchem",        "data"),
+    Input("store-uploaded",        "data"),
     Input("input-cruise-number",   "value"),
     Input("input-vessel-name",     "value"),
     Input("input-mission-number",  "value"),
     Input("input-platform",        "value"),
+)
+def batch_summary(station_matches, in_physchem, uploaded,
+                  cruise_number, vessel_name, mission_number, platform):
+    if not station_matches:
+        return "", True, True, True
+    in_physchem = in_physchem or {}
+    uploaded = set(uploaded or [])
+    n        = len(station_matches)
+    n_in     = sum(1 for k in station_matches if in_physchem.get(k) is True)
+    n_up     = sum(1 for k in station_matches if k in uploaded)
+    n_new    = sum(1 for k in station_matches
+                   if in_physchem.get(k) is False and k not in uploaded)
+    n_unk    = sum(1 for k in station_matches
+                   if in_physchem.get(k) is None and k not in uploaded)
+    parts = [f"{n} profiles", f"{n_in} in PhysChem", f"{n_new} new"]
+    if n_up:
+        parts.append(f"{n_up} uploaded now")
+    if n_unk:
+        parts.append(f"{n_unk} status unknown")
+    fields_complete = all([cruise_number, vessel_name, mission_number, platform])
+    can_upload = fields_complete and n_new > 0
+    hint = "" if fields_complete else " · fill in all cruise parameters to upload"
+    return " · ".join(parts) + hint, False, False, not can_upload
+
+
+# ── Re-check PhysChem (e.g. after correcting mission / platform number)
+@app.callback(
+    Output("store-physchem", "data", allow_duplicate=True),
+    Output("action-status",  "children", allow_duplicate=True),
+    Input("btn-check-physchem", "n_clicks"),
+    State("store-station-matches", "data"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def check_physchem_on_profile_change(npc_json, meta_json,
-                                     cruise_number, vessel_name,
-                                     mission_number, platform):
-    no_npc = not npc_json or npc_json == "{}"
-    if no_npc:
-        return True, True, ""
-    fields_complete = all([cruise_number, vessel_name, mission_number, platform])
-    # NPC exists – check if already in PhysChem
-    try:
-        meta = json.loads(meta_json) if meta_json and meta_json != "{}" else {}
-    except Exception:
-        meta = {}
-    if meta and check_if_operation_in_physchem(meta):
-        return False, True, "⚠ This profile is already uploaded to PhysChem."
-    return False, not fields_complete, ""
+def recheck_physchem(n_clicks, station_matches, mission_number, platform):
+    if not n_clicks or not station_matches:
+        return no_update, no_update
+    status = physchem_status(
+        station_matches,
+        {k: v.get("op_time_start") for k, v in station_matches.items()},
+        {"platform": platform, "mission_number": mission_number})
+    if any(v is None for v in status.values()):
+        return status, "Could not query PhysChem (check mission # and platform #)."
+    return status, "PhysChem status updated."
 
 
-# ── Upload to S3
+def _all_npcs(station_matches, edits, rsk_df_json, param_vals, cruise,
+              rsk_meta, cruise_times, keys=None):
+    """Yield (key, df_npc, meta) for the given (default: all) profiles."""
+    df_all = pd.read_json(StringIO(rsk_df_json), orient="split")
+    for key in (keys if keys is not None else station_matches.keys()):
+        data = station_matches[key]
+        df_prof = profile_df(df_all, data)
+        edit = (edits or {}).get(key) or {"span": auto_span(df_prof), "excluded": []}
+        df_npc, meta = compute_profile_npc(df_prof, data, edit, param_vals, cruise,
+                                           rsk_meta, cruise_times)
+        yield key, df_npc, meta
+
+
+# ── Download all NPC files as one zip
 @app.callback(
-    Output("action-status", "children", allow_duplicate=True),
-    Input("btn-upload-s3",  "n_clicks"),
-    State("store-span-range",      "data"),
-    State("store-excluded",        "data"),
-    State("checklist-params",      "value"),
-    State("store-current-index",   "data"),
+    Output("download-npc",  "data"),
+    Output("action-status", "children"),
+    Input("btn-download-all", "n_clicks"),
     State("store-station-matches", "data"),
+    State("store-edits",           "data"),
     State("store-rsk-df",          "data"),
+    State("checklist-params",      "value"),
     State("store-rsk-meta",        "data"),
     State("store-cruise-times",    "data"),
     State("input-cruise-number",   "value"),
@@ -1702,57 +2080,83 @@ def check_physchem_on_profile_change(npc_json, meta_json,
     State("input-platform",        "value"),
     prevent_initial_call=True,
 )
-def upload_to_s3(n_clicks, span_range, excluded, param_vals,
-                 current_idx, station_matches, rsk_df_json, rsk_meta,
-                 cruise_times, cruise_number, vessel_name, mission_number, platform):
+def download_all_npc(n_clicks, station_matches, edits, rsk_df_json, param_vals,
+                     rsk_meta, cruise_times,
+                     cruise_number, vessel_name, mission_number, platform):
+    if not n_clicks or not station_matches or not rsk_df_json:
+        return no_update, no_update
+    cruise = _cruise_from_inputs(cruise_number, vessel_name, mission_number, platform)
+    buf, names, skipped = BytesIO(), set(), []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for key, df_npc, meta in _all_npcs(station_matches, edits, rsk_df_json,
+                                           param_vals, cruise, rsk_meta, cruise_times):
+            if not len(df_npc):
+                skipped.append(key)
+                continue
+            fname = _npc_filename(cruise_number, meta.get("operation.timeStart"))
+            base, n = fname[:-4], 2
+            while fname in names:        # two casts starting in the same second
+                fname = f"{base}_{n}.npc"; n += 1
+            names.add(fname)
+            zf.writestr(fname, npc_to_string(meta, df_npc))
+    if not names:
+        return no_update, "No NPC data to download."
+    zip_name = f"{(cruise_number or 'npc').strip().replace(' ', '_')}_npc.zip"
+    msg = f"Downloaded {len(names)} NPC file(s) in {zip_name}"
+    if skipped:
+        msg += f" · skipped (no data): {', '.join(skipped)}"
+    return dcc.send_bytes(buf.getvalue(), zip_name), msg
+
+
+# ── Upload all profiles that are not yet in PhysChem
+@app.callback(
+    Output("store-uploaded", "data", allow_duplicate=True),
+    Output("action-status",  "children", allow_duplicate=True),
+    Input("confirm-upload-all", "submit_n_clicks"),
+    State("store-station-matches", "data"),
+    State("store-physchem",        "data"),
+    State("store-uploaded",        "data"),
+    State("store-edits",           "data"),
+    State("store-rsk-df",          "data"),
+    State("checklist-params",      "value"),
+    State("store-rsk-meta",        "data"),
+    State("store-cruise-times",    "data"),
+    State("input-cruise-number",   "value"),
+    State("input-vessel-name",     "value"),
+    State("input-mission-number",  "value"),
+    State("input-platform",        "value"),
+    prevent_initial_call=True,
+)
+def upload_all_new(n_clicks, station_matches, in_physchem, uploaded, edits,
+                   rsk_df_json, param_vals, rsk_meta, cruise_times,
+                   cruise_number, vessel_name, mission_number, platform):
+    if not n_clicks or not station_matches or not rsk_df_json:
+        return no_update, no_update
     if not BOTO3_AVAILABLE:
-        return "boto3 not installed – cannot upload."
-    if not station_matches or not rsk_df_json or not span_range:
-        return "No NPC data available – select a span first."
-    try:
-        span_start, span_end = span_range
-        keys        = list(station_matches.keys())
-        data        = station_matches[keys[current_idx]]
-        df_all      = pd.read_json(StringIO(rsk_df_json), orient="split")
-        df_profile  = df_all.loc[data["df_rsk_indices"]].copy().reset_index(drop=True)
-        new_span    = list(range(int(span_start), min(int(span_end) + 1, len(df_profile))))
-        if not new_span:
-            return "No NPC data available – select a span first."
-        ct_start = cruise_times.get("start") if cruise_times else None
-        ct_end   = cruise_times.get("end")   if cruise_times else None
-        df_npc, meta = calculate_df_npc(
-            df_profile, new_span, set(excluded or []),
-            "o2" in (param_vals or []),
-            "chl" in (param_vals or []),
-            ct_start, ct_end,
-            cruise_number or "", vessel_name or "",
-            mission_number or "", platform or "",
-            data.get("op_number", current_idx + 1), rsk_meta or {},
-            data["station_info"],
-        )
-
-        os.environ["AWS_REQUEST_CHECKSUM_CALCULATION"]  = "when_required"
-        os.environ["AWS_RESPONSE_CHECKSUM_VALIDATION"]  = "when_required"
-
-        s3 = boto3.resource(
-            service_name="s3",
-            endpoint_url=S3_ENDPOINT_URL,
-            aws_access_key_id=S3_ACCESS_KEY_ID,
-            aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-        )
-
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".npc") as f:
-            tmp_path = f.name
-        npc_write(meta, df_npc, tmp_path)
-
-        fname_s3 = _npc_filename(cruise_number, meta.get("operation.timeStart"))
-        dest = f"{S3_DEST_PREFIX.rstrip('/')}/{fname_s3}"
-        with open(tmp_path, "rb") as fh:
-            s3.Bucket(S3_BUCKET).put_object(Key=dest, Body=fh)
-        os.unlink(tmp_path)
-        return f"Uploaded successfully → {dest}"
-    except Exception as e:
-        return f"Upload failed: {e}"
+        return no_update, "boto3 not installed – cannot upload."
+    uploaded = list(uploaded or [])
+    # Only profiles PhysChem confirmed it doesn't have (unknown status is skipped)
+    todo = [k for k in station_matches
+            if (in_physchem or {}).get(k) is False and k not in uploaded]
+    if not todo:
+        return no_update, "Nothing to upload – all profiles are already in PhysChem."
+    cruise = _cruise_from_inputs(cruise_number, vessel_name, mission_number, platform)
+    done, failed = [], []
+    for key, df_npc, meta in _all_npcs(station_matches, edits, rsk_df_json, param_vals,
+                                       cruise, rsk_meta, cruise_times, keys=todo):
+        if not len(df_npc):
+            failed.append(f"{key} (no data)")
+            continue
+        try:
+            s3_put_npc(meta, df_npc, cruise_number)
+            done.append(key)
+        except Exception as exc:
+            failed.append(f"{key} ({exc})")
+    msg = [html.Div(f"Uploaded {len(done)} of {len(todo)} new profile(s).",
+                    className="text-success" if done else "")]
+    if failed:
+        msg.append(html.Div("Failed: " + "; ".join(failed), className="text-danger"))
+    return uploaded + done, msg
 
 
 # ─────────────────────────────────────────────

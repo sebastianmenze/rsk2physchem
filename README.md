@@ -8,6 +8,9 @@ A web application for processing, quality-controlling, and exporting CTD (Conduc
 
 - Upload one or more RBR RSK binary files (multi-cast cruises supported)
 - Automatic station matching against Toktlogger cruise/activity APIs
+- Overview of all profiles as images (downcast + profiles + NPC line) for quick QC, in a grid or stacked vertically
+- PhysChem status per profile (already in PhysChem / new / uploaded)
+- Download all NPC files as one zip, or upload all new profiles to PhysChem at once
 - Interactive 4-panel profile plot (temperature, salinity, dissolved O₂, chlorophyll)
 - Depth-vs-time timeseries with drag-to-select span
 - Time-range slider for downcast selection (auto-detected)
@@ -83,14 +86,30 @@ While files are being parsed a fullscreen loading spinner is shown.
 After processing, the app:
 - Queries the Toktlogger API to find cruise and station metadata matching the data timestamps
 - Populates the **Cruise Parameters** fields (cruise number, vessel, mission, platform)
-- Displays all matched CTD stations as markers on the map
-- Loads the first station automatically
+- Skips CTD stations that contain no RSK data points
+- Auto-detects the downcast of every profile, computes its NPC bins, and draws an overview image
+- Checks which profiles are already in PhysChem
 
 ---
 
-### 3. Browse stations
+### 3. Overview of all profiles
 
-Use the **← Prev** and **Next →** buttons to step through the matched CTD stations, or click any marker on the map and press **Select profile** in the popup.
+The overview shows one image per profile: depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×. Use **Grid** / **Stacked** at the top right to switch layout; the list scrolls vertically.
+
+Each image has badges:
+
+| Badge | Meaning |
+|---|---|
+| **In PhysChem** | This operation (same mission and start time) already exists in PhysChem |
+| **New** | Not yet in PhysChem — will be uploaded by **Upload new profiles** |
+| **Uploaded** | Uploaded to the S3 inbox in this session |
+| **Edited** | Span or exclusions were changed and saved by hand |
+| **No NPC data** | The span produced no depth bins — check this profile |
+| **PhysChem status unknown** | PhysChem could not be queried (check mission # / platform #) |
+
+**Double-click** an image to open that profile in the interactive view (steps 4–6). There, press **Save** to keep your changes (the overview image is redrawn) and **← Back to overview** to return. Changes that are not saved are discarded when you go back or move to another profile; the toolbar shows **● Unsaved changes** until you save. **Reset to auto downcast** restores the automatic span and clears exclusions.
+
+In the interactive view, use **← Prev** / **Next →**, **Go to #**, or a map marker's **Select profile** to move between profiles.
 
 The **Station Info** panel shows the station name, activity number, start/end times, coordinates, and the total number of data points. Stations where the CTD trigger time was automatically corrected are shown as orange markers with a warning note.
 
@@ -161,16 +180,15 @@ Any edits are included in the NPC file the next time you download or upload — 
 
 ---
 
-### 9. Download or upload the NPC file
+### 9. Download or upload all NPC files
 
-Once you are satisfied with the span selection, exclusions, and metadata:
+The **All Profiles** section in the left panel works on every profile at once, using each profile's saved span and exclusions:
 
-- **Download NPC File** — saves a `.npc` text file to your computer
-- **Upload to PhysChem (S3)** — sends the file directly to the configured S3 bucket for ingestion into the PhysChem database
+- **Download all NPC files (.zip)** — one `.npc` file per profile, named `cruisenumber_YYYYMMDD_HHMMSS.npc`
+- **Upload new profiles to PhysChem** — after a confirmation, sends only the profiles marked **New** to the configured S3 bucket. Profiles already in PhysChem, uploaded earlier in the session, or with unknown status are skipped.
+- **Check PhysChem status** — re-queries PhysChem, e.g. after correcting the mission or platform number
 
-Both actions recompute the NPC dataset from scratch so that any last-minute edits to the text fields are captured.
-
-The upload button is disabled if the profile is already present in PhysChem or if S3 credentials are not configured.
+Both actions recompute the NPC data from scratch, so edits to the cruise parameters and export parameters are always included. The upload button is disabled until all cruise parameters are filled in and at least one profile is new.
 
 ---
 
