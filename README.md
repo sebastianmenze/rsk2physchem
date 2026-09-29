@@ -99,9 +99,9 @@ After processing, the app:
 
 ### 3. Overview of all profiles
 
-At the top of the overview a map shows every station as a numbered marker, coloured by PhysChem status (green: in PhysChem, orange: new, light blue: uploaded, grey: unknown). Click a marker for the station's date, activity, position, number of points and status, and an **Edit profile** button.
+At the top of the overview a map shows every station as a marker labelled with its operation number, coloured by PhysChem status (green: in PhysChem, orange: new, light blue: uploaded, grey: unknown). Click a marker for the station's date, activity, position, number of points and status, and an **Edit profile** button.
 
-Below the map, the overview lists one image per profile (scroll vertically): depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×.
+Below the map, the overview lists one image per profile (scroll vertically), each labelled with its operation number and Toktlogger station, e.g. **Op 15 · Stn 123**, plus the activity number and start time: depth vs time with the selected downcast shaded, and temperature, salinity, O₂ and chlorophyll with the NPC bin averages as a red line. Excluded points are red ×.
 
 Each profile has an **Include** tick box. Profiles already **In PhysChem** start unticked (also when **Check PhysChem status** finds them later); all others start ticked. You can tick or untick any profile by hand. Unticked profiles are faded on the map and left out of **Download all NPC files** and **Upload new profiles**.
 
@@ -119,7 +119,7 @@ Each image has badges:
 
 Click **Edit profile** (on the profile or in its map popup), or **double-click** the image, to open that profile in the interactive view (steps 4–6). There, press **Save** to keep your changes (the overview image is redrawn) and **← Back to overview** to return. Changes that are not saved are discarded when you go back or move to another profile; the toolbar shows **● Unsaved changes** until you save. **Reset to auto downcast** restores the automatic span and clears exclusions.
 
-In the interactive view, use **← Prev** / **Next →**, **Go to #**, or a map marker's **Select profile** to move between profiles.
+In the interactive view, use **← Prev** / **Next →**, **Go to Op #** (jumps to the profile with that operation number, or the nearest one), or a map marker's **Select profile** to move between profiles.
 
 The **Station Info** panel shows the station name, activity number, start/end times, coordinates, and the total number of data points. Stations where the CTD trigger time was automatically corrected are shown as orange markers with a warning note.
 

@@ -887,6 +887,16 @@ def build_timeseries_figure(df_profile, span_start, span_end):
 # Leaflet map helper
 # ─────────────────────────────────────────────
 
+def _op_range(station_matches):
+    ops = [v.get("op_number") for v in station_matches.values() if v.get("op_number")]
+    return f"{min(ops)}–{max(ops)}" if ops else ""
+
+
+def profile_label(data):
+    """'Op 15 · Stn St2': NPC operation number and Toktlogger station name."""
+    return f"Op {data.get('op_number', '?')} · Stn {data['station_info']['name']}"
+
+
 def build_map_markers(station_matches, current_index):
     markers = []
     keys = list(station_matches.keys())
@@ -905,7 +915,7 @@ def build_map_markers(station_matches, current_index):
         )
         popup = dl.Popup(
             html.Div([
-                html.Div(f"#{i+1} · {si['name']}",
+                html.Div(profile_label(station_matches[key]),
                          style={"fontWeight": "bold", "fontSize": "13px",
                                 "marginBottom": "4px"}),
                 html.Table([
@@ -1099,7 +1109,7 @@ left_panel = dbc.Card([
                        size="sm", disabled=True),
         ], className="w-100 mb-2"),
         dbc.InputGroup([
-            dbc.InputGroupText("Go to #"),
+            dbc.InputGroupText("Go to Op #"),
             dbc.Input(id="input-jump-profile", type="number", min=1, step=1,
                       size="sm", debounce=True, disabled=True),
             dbc.Button("Go", id="btn-jump-profile", color="secondary",
@@ -1536,7 +1546,9 @@ def navigate(n_prev, n_next, n_clear, n_reset, select_clicks, thumb_events,
     if triggered in ("btn-jump-profile", "input-jump-profile"):
         if jump_value is None:
             return no_update, no_update, no_update
-        target = min(max(int(jump_value), 1), n) - 1
+        # Jump to the profile with that operation number (or the nearest one)
+        ops = [station_matches[k].get("op_number", i + 1) for i, k in enumerate(keys)]
+        target = min(range(n), key=lambda i: abs(ops[i] - int(jump_value)))
     elif triggered == "btn-prev":
         target = max(0, current_idx - 1)
     elif triggered == "btn-next":
@@ -1851,6 +1863,7 @@ def update_display(station_matches, current_idx, excluded, npc_json):
                      f"  Original: {si['original_startTime']}\n"
                      f"  {si['correction_info']}")
     info = (
+        f"Op #:     {data.get('op_number', '?')}\n"
         f"Name:     {si['name']}\n"
         f"Activity: {si['activityNumber']}\n"
         f"Start:    {si['startTime']}\n"
@@ -1862,16 +1875,18 @@ def update_display(station_matches, current_idx, excluded, npc_json):
         + corr_note
     )
 
-    nav_label  = f"Profile {current_idx+1} / {n}"
+    nav_label  = html.Div([profile_label(data),
+                           html.Div(f"profile {current_idx+1} of {n}",
+                                    className="small text-muted fw-normal")])
     excl_count = f"Excluded: {len(excluded or [])} points"
-    status_msg = f"Station {current_idx+1}/{n} · {df_npc_len} depth bins computed"
+    status_msg = f"{profile_label(data)} · {df_npc_len} depth bins computed"
 
     return (
         center, zoom, markers,
         info, nav_label,
         current_idx <= 0, current_idx >= n - 1,
         excl_count, status_msg,
-        n, f"1–{n}", False, False,
+        None, _op_range(station_matches), False, False,
     )
 
 
@@ -1895,7 +1910,10 @@ def update_status_npc(npc_json, current_idx, station_matches):
             df_npc_len = len(pd.read_json(StringIO(npc_json), orient="split"))
         except Exception:
             pass
-    return f"Station {current_idx+1}/{n} · {df_npc_len} depth bins computed"
+    keys = list(station_matches.keys())
+    if not 0 <= (current_idx or 0) < len(keys):
+        return no_update
+    return f"{profile_label(station_matches[keys[current_idx]])} · {df_npc_len} depth bins computed"
 
 
 # ── Profile figure — part 1: immediate render on upload or lasso
@@ -2125,7 +2143,9 @@ def render_overview(thumbs, in_physchem, uploaded, links, edits, station_matches
                                    label="Include", className="mb-0"),
                       title="Include this profile in the NPC export and PhysChem upload",
                       className="me-3"),
-             html.Span(f"#{i+1} {key}", className="fw-bold me-2"),
+             html.Span(profile_label(station_matches[key]), className="fw-bold me-2"),
+             html.Span(f"activity {station_matches[key]['station_info']['activityNumber']}",
+                       className="text-muted me-2"),
              html.Span(station_matches[key]["station_info"]["startTime"],
                        className="text-muted me-2")]
             + _status_badge(key, (in_physchem or {}).get(key), uploaded,
@@ -2212,7 +2232,7 @@ def overview_markers(station_matches, in_physchem, uploaded, skip, links):
             return html.Tr([html.Td(label, style={"color": "#888", "paddingRight": "8px"}),
                             html.Td(value)])
         popup = dl.Popup(html.Div([
-            html.Div(f"#{i+1} · {si['name']}",
+            html.Div(profile_label(data),
                      style={"fontWeight": "bold", "fontSize": "13px", "marginBottom": "4px"}),
             html.Table([
                 row("Activity", si["activityNumber"]),
@@ -2239,7 +2259,7 @@ def overview_markers(station_matches, in_physchem, uploaded, skip, links):
             color="white", weight=2, fillColor=colour,
             fillOpacity=0.25 if key in (skip or []) else 0.9,
             children=[
-                dl.Tooltip(str(i + 1), permanent=True, direction="top",
+                dl.Tooltip(str(data.get("op_number", "?")), permanent=True, direction="top",
                            offset=[0, -8], className="station-number"),
                 popup,
             ],
